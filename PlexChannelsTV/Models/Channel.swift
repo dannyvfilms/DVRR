@@ -74,4 +74,12 @@ struct Channel: Identifiable, Codable, Hashable {
         }
         return (last, 0)
     }
+
+    func nowPlaying(at date: Date = .init()) -> Media? {
+        playbackState(at: date)?.media
+    }
+
+    func nowPlayingTitle(at date: Date = .init()) -> String? {
+        nowPlaying(at: date)?.title
+    }
 }
