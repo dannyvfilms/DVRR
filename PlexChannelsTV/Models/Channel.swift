@@ -14,6 +14,25 @@ struct Channel: Identifiable, Codable, Hashable {
         let title: String
         /// Duration in seconds.
         let duration: TimeInterval
+        let metadataKey: String?
+        let partKey: String?
+        let partID: Int?
+
+        init(
+            id: String,
+            title: String,
+            duration: TimeInterval,
+            metadataKey: String? = nil,
+            partKey: String? = nil,
+            partID: Int? = nil
+        ) {
+            self.id = id
+            self.title = title
+            self.duration = duration
+            self.metadataKey = metadataKey
+            self.partKey = partKey
+            self.partID = partID
+        }
     }
 
     let id: UUID
@@ -49,34 +68,38 @@ struct Channel: Identifiable, Codable, Hashable {
         }
     }
 
-    /// Returns the media item and playback offset for a given point in time.
-    func playbackState(at date: Date = .init()) -> (media: Media, offset: TimeInterval)? {
+    /// Returns the item index, media, and playback offset for a given point in time.
+    func playbackPosition(at date: Date = .init()) -> (index: Int, media: Media, offset: TimeInterval)? {
         guard !items.isEmpty else { return nil }
 
         let loopDuration = totalDuration
         guard loopDuration > 0 else { return nil }
 
         let elapsed = max(0, date.timeIntervalSince(scheduleAnchor))
-        let position = elapsed.truncatingRemainder(dividingBy: loopDuration)
+        var position = elapsed.truncatingRemainder(dividingBy: loopDuration)
 
-        var cumulative: TimeInterval = 0
-        for media in items {
-            let nextCumulative = cumulative + max(0, media.duration)
-            if position < nextCumulative {
-                return (media, position - cumulative)
+        for (index, media) in items.enumerated() {
+            let duration = max(0, media.duration)
+            if position < duration {
+                return (index, media, position)
             }
-            cumulative = nextCumulative
+            position -= duration
         }
 
-        // Fallback to last item if rounding errors occur.
-        guard let last = items.last else {
-            return nil
+        if let last = items.enumerated().last {
+            return (last.offset, last.element, 0)
         }
-        return (last, 0)
+        return nil
+    }
+
+    /// Returns the media item and playback offset for a given point in time.
+    func playbackState(at date: Date = .init()) -> (media: Media, offset: TimeInterval)? {
+        guard let position = playbackPosition(at: date) else { return nil }
+        return (position.media, position.offset)
     }
 
     func nowPlaying(at date: Date = .init()) -> Media? {
-        playbackState(at: date)?.media
+        playbackPosition(at: date)?.media
     }
 
     func nowPlayingTitle(at date: Date = .init()) -> String? {

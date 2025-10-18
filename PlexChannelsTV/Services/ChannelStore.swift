@@ -65,10 +65,14 @@ final class ChannelStore: ObservableObject {
 
             let mediaItems = itemsResponse.compactMap { item -> Channel.Media? in
                 guard let duration = item.duration, duration > 0 else { return nil }
+                let firstPart = item.media.first?.parts.first
                 return Channel.Media(
                     id: item.ratingKey,
                     title: item.title ?? "Untitled",
-                    duration: TimeInterval(duration) / 1000.0
+                    duration: TimeInterval(duration) / 1000.0,
+                    metadataKey: item.key,
+                    partKey: firstPart?.key,
+                    partID: firstPart?.id
                 )
             }
 

@@ -6,54 +6,145 @@
 //
 
 import SwiftUI
-import Foundation
+import AVKit
 
 struct ChannelPlayerView: View {
     let channel: Channel
 
-    @State private var currentPlayback = channel.playbackState()
+    @EnvironmentObject private var plexService: PlexService
+
+    @State private var player: AVPlayer?
+    @State private var playbackObserver: Any?
+    @State private var currentPlayback: (media: Channel.Media, offset: TimeInterval)?
+    @State private var playbackError: String?
     @State private var timer: Timer?
 
     var body: some View {
-        VStack(spacing: 24) {
-            Text(channel.name)
-                .font(.largeTitle)
+        ZStack(alignment: .bottomLeading) {
+            Color.black.ignoresSafeArea()
 
-            if let playback = currentPlayback {
-                VStack(spacing: 12) {
-                    Text(playback.media.title)
+            if let player = player {
+                VideoPlayer(player: player)
+                    .ignoresSafeArea()
+            } else if let playbackError {
+                VStack(spacing: 16) {
+                    Text("Playback Error")
                         .font(.title2)
-                    Text("Elapsed \(formattedTime(playback.offset)) of \(formattedTime(playback.media.duration))")
-                        .font(.footnote)
+                    Text(playbackError)
+                        .font(.body)
+                        .multilineTextAlignment(.center)
                         .foregroundStyle(.secondary)
                 }
+                .padding()
             } else {
-                Text("Channel is ready to play.")
-                    .foregroundStyle(.secondary)
+                ProgressView()
+                    .progressViewStyle(.circular)
             }
 
-            Spacer()
+            if let playback = currentPlayback {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text(channel.name)
+                        .font(.title3)
+                        .bold()
+                    Text("Now Playing: \(playback.media.title)")
+                        .font(.footnote)
+                    Text("Elapsed \(formattedTime(playback.offset)) of \(formattedTime(playback.media.duration))")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+                .padding()
+                .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                .padding()
+            }
         }
-        .padding(.top, 80)
-        .onAppear(perform: startTimer)
-        .onDisappear(perform: stopTimer)
+        .task {
+            await tuneToCurrentProgram()
+            startTimer()
+        }
+        .onDisappear {
+            cleanup()
+        }
     }
 
+    @MainActor
+    private func tuneToCurrentProgram() async {
+        guard let position = channel.playbackPosition() else {
+            playbackError = "No playable media available for this channel."
+            return
+        }
+
+        await load(media: position.media, offset: position.offset)
+    }
+
+    @MainActor
+    private func load(media: Channel.Media, offset: TimeInterval) async {
+        guard let streamURL = plexService.streamURL(for: media, offset: offset) else {
+            playbackError = "Unable to construct a Plex stream URL."
+            return
+        }
+
+        let playerItem = AVPlayerItem(url: streamURL)
+        currentPlayback = (media, offset)
+        playbackError = nil
+
+        if player == nil {
+            player = AVPlayer(playerItem: playerItem)
+        } else {
+            player?.replaceCurrentItem(with: playerItem)
+        }
+
+        observePlaybackEnd(for: playerItem)
+
+        let targetTime = CMTime(seconds: offset, preferredTimescale: 600)
+        player?.seek(to: targetTime, toleranceBefore: .zero, toleranceAfter: .zero) { _ in
+            player?.play()
+        }
+    }
+
+    @MainActor
+    private func observePlaybackEnd(for item: AVPlayerItem) {
+        if let playbackObserver {
+            NotificationCenter.default.removeObserver(playbackObserver)
+        }
+
+        playbackObserver = NotificationCenter.default.addObserver(forName: .AVPlayerItemDidPlayToEndTime, object: item, queue: .main) { _ in
+            Task {
+                await tuneToCurrentProgram()
+            }
+        }
+    }
+
+    @MainActor
     private func startTimer() {
         stopTimer()
-        currentPlayback = channel.playbackState()
         timer = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { _ in
-            currentPlayback = channel.playbackState()
+            Task { @MainActor in
+                currentPlayback = channel.playbackState()
+            }
         }
     }
 
+    @MainActor
     private func stopTimer() {
         timer?.invalidate()
         timer = nil
     }
 
+    @MainActor
+    private func cleanup() {
+        stopTimer()
+
+        if let playbackObserver {
+            NotificationCenter.default.removeObserver(playbackObserver)
+            self.playbackObserver = nil
+        }
+
+        player?.pause()
+        player = nil
+    }
+
     private func formattedTime(_ interval: TimeInterval) -> String {
-        guard interval.isFinite && interval > 0 else { return "00:00:00" }
+        guard interval.isFinite && interval > 0 else { return "00:00" }
         let totalSeconds = Int(interval)
         let hours = totalSeconds / 3600
         let minutes = (totalSeconds % 3600) / 60

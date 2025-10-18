@@ -232,6 +232,21 @@ final class PlexService: ObservableObject {
         )
     }
 
+    func streamURL(for media: Channel.Media, offset: TimeInterval = 0) -> URL? {
+        guard let currentSession = session else { return nil }
+
+        if let directURL = directPlayURL(for: media, token: currentSession.server.accessToken, baseURL: currentSession.server.baseURL) {
+            return directURL
+        }
+
+        return transcodeURL(
+            for: media,
+            offset: offset,
+            token: currentSession.server.accessToken,
+            baseURL: currentSession.server.baseURL
+        )
+    }
+
     func signOut() {
         credentialStore.storeSession(nil)
         session = nil
@@ -346,6 +361,45 @@ final class PlexService: ObservableObject {
                 continuation.resume(with: result)
             }
         }
+    }
+
+    private func directPlayURL(for media: Channel.Media, token: String, baseURL: URL) -> URL? {
+        guard let partKey = media.partKey else { return nil }
+
+        guard let url = URL(string: partKey, relativeTo: baseURL) ??
+            baseURL.appendingPathComponent(partKey.trimmingCharacters(in: CharacterSet(charactersIn: "/"))) else {
+            return nil
+        }
+
+        guard var components = URLComponents(url: url, resolvingAgainstBaseURL: true) else { return nil }
+        var items = components.queryItems ?? []
+        items.append(.init(name: "X-Plex-Token", value: token))
+        components.queryItems = items
+        return components.url
+    }
+
+    private func transcodeURL(
+        for media: Channel.Media,
+        offset: TimeInterval,
+        token: String,
+        baseURL: URL
+    ) -> URL? {
+        let path = "/video/:/transcode/universal/start.m3u8"
+        guard let url = URL(string: path, relativeTo: baseURL) else { return nil }
+        guard var components = URLComponents(url: url, resolvingAgainstBaseURL: true) else { return nil }
+
+        var queryItems: [URLQueryItem] = [
+            .init(name: "X-Plex-Token", value: token),
+            .init(name: "path", value: "/library/metadata/\(media.id)"),
+            .init(name: "offset", value: String(Int(offset))),
+            .init(name: "protocol", value: "hls"),
+            .init(name: "directPlay", value: "0"),
+            .init(name: "directStream", value: "1"),
+            .init(name: "fastSeek", value: "1"),
+        ]
+
+        components.queryItems = queryItems
+        return components.url
     }
 }
 
