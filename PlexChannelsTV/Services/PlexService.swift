@@ -27,6 +27,7 @@ final class PlexService: ObservableObject {
 
     enum ServiceError: LocalizedError {
         case missingAuthenticationToken
+        case noActiveSession
         case unableToLocateServer
         case unableToCreateServerURL
         case failedToLoadLibraries
@@ -37,6 +38,8 @@ final class PlexService: ObservableObject {
             switch self {
             case .missingAuthenticationToken:
                 return "Unable to retrieve authentication token from Plex."
+            case .noActiveSession:
+                return "No active Plex session is available."
             case .unableToLocateServer:
                 return "No accessible Plex servers were found for this account."
             case .unableToCreateServerURL:
@@ -196,6 +199,37 @@ final class PlexService: ObservableObject {
             print("PlexService.refreshLibraries unknown error: \(error)")
             throw serviceError
         }
+    }
+
+    func fetchLibraryItems(
+        libraryKey: String,
+        mediaType: PlexMediaType,
+        baseURL: URL,
+        token: String
+    ) async throws -> [PlexMediaItem] {
+        let request = Plex.Request.LibraryItems(
+            key: libraryKey,
+            mediaType: mediaType
+        )
+        let response: Plex.Request.LibraryItems.Response = try await perform(
+            request,
+            baseURL: baseURL,
+            token: token
+        )
+        return response.mediaContainer.metadata
+    }
+
+    func fetchLibraryItems(for library: PlexLibrary) async throws -> [PlexMediaItem] {
+        guard let currentSession = session else {
+            throw ServiceError.noActiveSession
+        }
+
+        return try await fetchLibraryItems(
+            libraryKey: library.key,
+            mediaType: library.type,
+            baseURL: currentSession.server.baseURL,
+            token: currentSession.server.accessToken
+        )
     }
 
     func signOut() {

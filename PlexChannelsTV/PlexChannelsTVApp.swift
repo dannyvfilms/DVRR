@@ -23,11 +23,13 @@ struct PlexChannelsTVApp: App {
         }
     }()
     @StateObject private var plexService = PlexService()
+    @StateObject private var channelStore = ChannelStore()
 
     var body: some Scene {
         WindowGroup {
             ContentView()
                 .environmentObject(plexService)
+                .environmentObject(channelStore)
         }
         .modelContainer(sharedModelContainer)
     }
