@@ -15,6 +15,7 @@ struct ChannelPlayerView: View {
 
     @State private var player: AVPlayer?
     @State private var playbackObserver: Any?
+    @State private var statusObserver: NSKeyValueObservation?
     @State private var currentPlayback: (media: Channel.Media, offset: TimeInterval)?
     @State private var playbackError: String?
     @State private var timer: Timer?
@@ -73,12 +74,12 @@ struct ChannelPlayerView: View {
             return
         }
 
-        await load(media: position.media, offset: position.offset)
+        await load(media: position.media, offset: position.offset, preferTranscode: false)
     }
 
     @MainActor
-    private func load(media: Channel.Media, offset: TimeInterval) async {
-        guard let streamURL = plexService.streamURL(for: media, offset: offset) else {
+    private func load(media: Channel.Media, offset: TimeInterval, preferTranscode: Bool) async {
+        guard let streamURL = plexService.streamURL(for: media, offset: offset, preferTranscode: preferTranscode) else {
             playbackError = "Unable to construct a Plex stream URL."
             return
         }
@@ -94,6 +95,7 @@ struct ChannelPlayerView: View {
         }
 
         observePlaybackEnd(for: playerItem)
+        observeStatus(for: playerItem, media: media, offset: offset, preferTranscode: preferTranscode)
 
         let targetTime = CMTime(seconds: offset, preferredTimescale: 600)
         player?.seek(to: targetTime, toleranceBefore: .zero, toleranceAfter: .zero) { _ in
@@ -110,6 +112,25 @@ struct ChannelPlayerView: View {
         playbackObserver = NotificationCenter.default.addObserver(forName: .AVPlayerItemDidPlayToEndTime, object: item, queue: .main) { _ in
             Task {
                 await tuneToCurrentProgram()
+            }
+        }
+    }
+
+    @MainActor
+    private func observeStatus(for item: AVPlayerItem, media: Channel.Media, offset: TimeInterval, preferTranscode: Bool) {
+        statusObserver?.invalidate()
+        statusObserver = item.observe(\.status, options: [.new, .initial]) { _, _ in
+            DispatchQueue.main.async {
+                switch item.status {
+                case .failed:
+                    if !preferTranscode {
+                        Task { await load(media: media, offset: offset, preferTranscode: true) }
+                    } else {
+                        playbackError = item.error?.localizedDescription ?? "Playback failed."
+                    }
+                default:
+                    break
+                }
             }
         }
     }
@@ -138,6 +159,8 @@ struct ChannelPlayerView: View {
             NotificationCenter.default.removeObserver(playbackObserver)
             self.playbackObserver = nil
         }
+        statusObserver?.invalidate()
+        statusObserver = nil
 
         player?.pause()
         player = nil

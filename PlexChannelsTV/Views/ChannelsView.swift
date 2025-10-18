@@ -17,6 +17,7 @@ struct ChannelsView: View {
     }
 
     @State private var path: [Destination] = []
+    @State private var channelPendingDeletion: Channel?
 
     var body: some View {
         NavigationStack(path: $path) {
@@ -47,6 +48,23 @@ struct ChannelsView: View {
                 ChannelPlayerView(channel: channel)
             }
         }
+        .confirmationDialog(
+            "Remove Channel?",
+            isPresented: Binding(
+                get: { channelPendingDeletion != nil },
+                set: { if !$0 { channelPendingDeletion = nil } }
+            ),
+            presenting: channelPendingDeletion
+        ) { pending in
+            Button("Delete “\(pending.name)”", role: .destructive) {
+                withAnimation {
+                    channelStore.removeChannel(pending)
+                }
+                channelPendingDeletion = nil
+            }
+        } message: { pending in
+            Text("This will remove “\(pending.name)” from your channel lineup. You can recreate it later from the Add Channel screen.")
+        }
     }
 
     private var channelsSection: some View {
@@ -56,15 +74,14 @@ struct ChannelsView: View {
             } else {
                 ForEach(channelStore.channels) { channel in
                     NavigationLink(value: Destination.channel(channel)) {
-                        ChannelRow(channel: channel)
+                        ChannelRow(
+                            channel: channel,
+                            onDelete: {
+                                channelPendingDeletion = channel
+                            }
+                        )
                     }
                     .focusable(true)
-                }
-                .onDelete { indexSet in
-                    withAnimation {
-                        let channelsToRemove = indexSet.map { channelStore.channels[$0] }
-                        channelsToRemove.forEach(channelStore.removeChannel)
-                    }
                 }
             }
         } header: {
@@ -107,6 +124,7 @@ struct ChannelsView: View {
 
 struct ChannelRow: View {
     let channel: Channel
+    var onDelete: (() -> Void)?
 
     var body: some View {
         HStack(spacing: 16) {
@@ -130,6 +148,16 @@ struct ChannelRow: View {
             }
 
             Spacer()
+
+            if let onDelete {
+                Button(role: .destructive, action: onDelete) {
+                    Image(systemName: "trash")
+                        .font(.title3)
+                }
+                .buttonStyle(.plain)
+                .focusable(true)
+                .accessibilityLabel("Delete \(channel.name)")
+            }
         }
         .padding(.vertical, 8)
     }

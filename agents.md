@@ -8,3 +8,4 @@
 ## Maintenance Notes
 - Update this file when agent responsibilities or roster changes.
 - Keep summary entries concise; link to commits or documentation as necessary.
+- Task 7 summary: added automated scheduling tests, improved playback fallback handling, and refined channel management UI.

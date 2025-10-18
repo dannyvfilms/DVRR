@@ -232,10 +232,19 @@ final class PlexService: ObservableObject {
         )
     }
 
-    func streamURL(for media: Channel.Media, offset: TimeInterval = 0) -> URL? {
+    func streamURL(
+        for media: Channel.Media,
+        offset: TimeInterval = 0,
+        preferTranscode: Bool = false
+    ) -> URL? {
         guard let currentSession = session else { return nil }
 
-        if let directURL = directPlayURL(for: media, token: currentSession.server.accessToken, baseURL: currentSession.server.baseURL) {
+        if !preferTranscode,
+           let directURL = directPlayURL(
+               for: media,
+               token: currentSession.server.accessToken,
+               baseURL: currentSession.server.baseURL
+           ) {
             return directURL
         }
 
