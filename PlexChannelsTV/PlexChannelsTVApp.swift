@@ -22,10 +22,12 @@ struct PlexChannelsTVApp: App {
             fatalError("Could not create ModelContainer: \(error)")
         }
     }()
+    @StateObject private var plexService = PlexService()
 
     var body: some Scene {
         WindowGroup {
             ContentView()
+                .environmentObject(plexService)
         }
         .modelContainer(sharedModelContainer)
     }

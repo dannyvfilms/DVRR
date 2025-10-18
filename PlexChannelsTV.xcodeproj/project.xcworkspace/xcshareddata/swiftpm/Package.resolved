@@ -1,0 +1,15 @@
+{
+  "originHash" : "727b52e85c09c5d99c26b03a1afea969e6079b0a7a26a348cee29cc15daaa367",
+  "pins" : [
+    {
+      "identity" : "plexkit",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/lcharlick/PlexKit",
+      "state" : {
+        "revision" : "95f35cb2c828e05173f69ce8fb39463977927f24",
+        "version" : "1.7.2"
+      }
+    }
+  ],
+  "version" : 3
+}
