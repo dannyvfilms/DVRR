@@ -155,9 +155,9 @@ struct ChannelPlayerView: View {
     private func seekCurrentPlayer(to offset: TimeInterval) {
         let clampedOffset = max(0, offset)
         let targetTime = CMTime(seconds: clampedOffset, preferredTimescale: 600)
-        player?.seek(to: targetTime, toleranceBefore: .zero, toleranceAfter: .zero) { [weak self] finished in
+        player?.seek(to: targetTime, toleranceBefore: .zero, toleranceAfter: .zero) { finished in
             guard finished else { return }
-            self?.player?.play()
+            self.player?.play()
         }
     }
 

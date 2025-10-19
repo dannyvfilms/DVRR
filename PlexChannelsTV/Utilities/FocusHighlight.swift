@@ -28,8 +28,30 @@ private struct FocusLegacyWrapper<Content: View>: View {
     let content: Content
     let onChange: (Bool) -> Void
 
+    @ViewBuilder
     var body: some View {
-        content.focusable(true, onFocusChange: onChange)
+        if #available(tvOS 15.0, *) {
+            FocusStateWrapper(content: content, onChange: onChange)
+        } else {
+            content.focusable(true, onFocusChange: onChange)
+        }
+    }
+}
+
+@available(tvOS 15.0, *)
+private struct FocusStateWrapper<Content: View>: View {
+    let content: Content
+    let onChange: (Bool) -> Void
+
+    @FocusState private var isFocused: Bool
+
+    var body: some View {
+        content
+            .focusable(true)
+            .focused($isFocused)
+            .onChange(of: isFocused) { newValue in
+                onChange(newValue)
+            }
     }
 }
 #endif

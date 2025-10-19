@@ -72,7 +72,7 @@ Build a native **tvOS** SwiftUI app that signs into a user’s **Plex** account 
 **19. Quick-Play polish** — Service method prefers direct play, falls back to HLS; show title; restore focus on back.  
 **20. UX cleanup** — Enforce single-CTA rule; empty state = copy only; when ≥1 channel, default focus = first channel.
 **21. Remote Connections** - Prioritized remote Plex endpoints after PIN linking to avoid off-LAN stalls and added connection ordering tests.
-**22. Channel management workflow** — Move delete/edit actions into a dedicated management flow and restore removal once UX is ready.
+**22. Channel management workflow** — Move delete/edit actions into a dedicated management flow, restore removal once UX is ready, and migrate focus handling to `FocusState` to resolve tvOS deprecation errors.
 
 ---
 
