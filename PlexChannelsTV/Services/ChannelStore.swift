@@ -52,8 +52,15 @@ final class ChannelStore: ObservableObject {
         channels.contains { $0.libraryKey == library.key }
     }
 
+    func channel(for library: PlexLibrary) -> Channel? {
+        channels.first { $0.libraryKey == library.key }
+    }
+
     func createChannel(
+        named customName: String? = nil,
         from library: PlexLibrary,
+        shuffle: Bool = false,
+        startAt: Date = Date(),
         using plexService: PlexService
     ) async throws -> Channel {
         guard !containsChannel(for: library) else {
@@ -63,28 +70,21 @@ final class ChannelStore: ObservableObject {
         do {
             let itemsResponse = try await plexService.fetchLibraryItems(for: library)
 
-            let mediaItems = itemsResponse.compactMap { item -> Channel.Media? in
-                guard let duration = item.duration, duration > 0 else { return nil }
-                let firstPart = item.media.first?.parts.first
-                return Channel.Media(
-                    id: item.ratingKey,
-                    title: item.title ?? "Untitled",
-                    duration: TimeInterval(duration) / 1000.0,
-                    metadataKey: item.key,
-                    partKey: firstPart?.key,
-                    partID: firstPart?.id
-                )
-            }
+            var mediaItems = itemsResponse.compactMap(Channel.Media.from)
 
             guard !mediaItems.isEmpty else {
                 throw ChannelCreationError.noPlayableItems
             }
 
+            if shuffle {
+                mediaItems.shuffle()
+            }
+
             let channel = Channel(
-                name: library.title ?? "Channel",
+                name: customName ?? library.title ?? "Channel",
                 libraryKey: library.key,
                 libraryType: library.type,
-                scheduleAnchor: Date(),
+                scheduleAnchor: startAt,
                 items: mediaItems
             )
 

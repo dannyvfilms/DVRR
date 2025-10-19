@@ -61,6 +61,10 @@ final class PlexService: ObservableObject {
     private let client: Plex
     private let credentialStore: PlexCredentialStore
 
+    var clientIdentifier: String {
+        credentialStore.clientIdentifier ?? ""
+    }
+
     init(
         credentialStore: PlexCredentialStore = PlexCredentialStore(),
         productName: String = "PlexChannelsTV",
@@ -205,11 +209,18 @@ final class PlexService: ObservableObject {
         libraryKey: String,
         mediaType: PlexMediaType,
         baseURL: URL,
-        token: String
+        token: String,
+        limit: Int? = nil
     ) async throws -> [PlexMediaItem] {
+        let range: CountableClosedRange<Int>? = {
+            guard let limit, limit > 0 else { return nil }
+            return 0...(limit - 1)
+        }()
+
         let request = Plex.Request.LibraryItems(
             key: libraryKey,
-            mediaType: mediaType
+            mediaType: mediaType,
+            range: range
         )
         let response: Plex.Request.LibraryItems.Response = try await perform(
             request,
@@ -219,7 +230,7 @@ final class PlexService: ObservableObject {
         return response.mediaContainer.metadata
     }
 
-    func fetchLibraryItems(for library: PlexLibrary) async throws -> [PlexMediaItem] {
+    func fetchLibraryItems(for library: PlexLibrary, limit: Int? = nil) async throws -> [PlexMediaItem] {
         guard let currentSession = session else {
             throw ServiceError.noActiveSession
         }
@@ -228,8 +239,67 @@ final class PlexService: ObservableObject {
             libraryKey: library.key,
             mediaType: library.type,
             baseURL: currentSession.server.baseURL,
-            token: currentSession.server.accessToken
+            token: currentSession.server.accessToken,
+            limit: limit
         )
+    }
+
+    func establishSession(
+        accountToken: String,
+        serverName: String,
+        serverIdentifier: String,
+        serverURL: URL,
+        serverAccessToken: String
+    ) async throws {
+        let response: Plex.Request.Libraries.Response = try await perform(
+            Plex.Request.Libraries(),
+            baseURL: serverURL,
+            token: serverAccessToken
+        )
+
+        let server = Session.Server(
+            identifier: serverIdentifier,
+            name: serverName,
+            baseURL: serverURL,
+            accessToken: serverAccessToken
+        )
+
+        let newSession = Session(
+            accountToken: accountToken,
+            user: nil,
+            server: server,
+            libraries: response.mediaContainer.directory
+        )
+
+        let stored = PlexCredentialStore.StoredSession(
+            accountToken: accountToken,
+            serverAccessToken: serverAccessToken,
+            serverURL: serverURL,
+            serverName: serverName,
+            serverIdentifier: serverIdentifier
+        )
+        credentialStore.storeSession(stored)
+        self.session = newSession
+    }
+
+    func buildImageURL(from path: String, width: Int? = nil, height: Int? = nil) -> URL? {
+        guard let session else { return nil }
+        guard let baseURL = URL(string: path, relativeTo: session.server.baseURL) ??
+            session.server.baseURL.appendingPathComponent(path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))) else {
+            return nil
+        }
+
+        guard var components = URLComponents(url: baseURL, resolvingAgainstBaseURL: true) else { return nil }
+        var items = components.queryItems ?? []
+        items.append(URLQueryItem(name: "X-Plex-Token", value: session.server.accessToken))
+        if let width {
+            items.append(URLQueryItem(name: "width", value: "\(width)"))
+        }
+        if let height {
+            items.append(URLQueryItem(name: "height", value: "\(height)"))
+        }
+        components.queryItems = items
+        return components.url
     }
 
     func streamURL(
@@ -375,9 +445,12 @@ final class PlexService: ObservableObject {
     private func directPlayURL(for media: Channel.Media, token: String, baseURL: URL) -> URL? {
         guard let partKey = media.partKey else { return nil }
 
-        guard let url = URL(string: partKey, relativeTo: baseURL) ??
-            baseURL.appendingPathComponent(partKey.trimmingCharacters(in: CharacterSet(charactersIn: "/"))) else {
-            return nil
+        let url: URL
+        if let resolved = URL(string: partKey, relativeTo: baseURL) {
+            url = resolved
+        } else {
+            let trimmed = partKey.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+            url = baseURL.appendingPathComponent(trimmed)
         }
 
         guard var components = URLComponents(url: url, resolvingAgainstBaseURL: true) else { return nil }

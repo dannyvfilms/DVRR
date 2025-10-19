@@ -9,6 +9,7 @@ import SwiftUI
 
 struct LoginView: View {
     @EnvironmentObject private var plexService: PlexService
+    @EnvironmentObject private var authState: AuthState
 
     @State private var username: String = ""
     @State private var password: String = ""
@@ -76,9 +77,8 @@ struct LoginView: View {
                     Text("Sign In")
                         .bold()
                 }
-            }
+        }
             .buttonStyle(.borderedProminent)
-            .controlSize(.large)
             .disabled(!isFormValid || plexService.isAuthenticating)
 
             Spacer()
@@ -102,6 +102,7 @@ struct LoginView: View {
             do {
                 try await plexService.authenticate(username: trimmedUsername, password: password)
                 password = ""
+                await authState.adoptCurrentSession()
             } catch {
                 if let serviceError = error as? PlexService.ServiceError {
                     validationMessage = serviceError.errorDescription
@@ -114,6 +115,18 @@ struct LoginView: View {
 }
 
 #Preview {
-    LoginView()
-        .environmentObject(PlexService())
+    let plexService = PlexService()
+    let linkService = PlexLinkService(
+        clientIdentifier: plexService.clientIdentifier,
+        product: "PlexChannelsTV",
+        version: "1.0",
+        device: "Apple TV",
+        platform: "tvOS",
+        deviceName: "Apple TV"
+    )
+    let authState = AuthState(plexService: plexService, linkService: linkService)
+
+    return LoginView()
+        .environmentObject(plexService)
+        .environmentObject(authState)
 }

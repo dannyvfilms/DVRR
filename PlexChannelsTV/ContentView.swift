@@ -9,21 +9,33 @@ import SwiftUI
 import SwiftData
 
 struct ContentView: View {
-    @EnvironmentObject private var plexService: PlexService
+    @EnvironmentObject private var authState: AuthState
 
     var body: some View {
         Group {
-            if plexService.session != nil {
+            if authState.session != nil {
                 ChannelsView()
             } else {
-                LoginView()
+                LinkLoginView()
             }
         }
     }
 }
 #Preview {
-    ContentView()
+    let plexService = PlexService()
+    let linkService = PlexLinkService(
+        clientIdentifier: plexService.clientIdentifier,
+        product: "PlexChannelsTV",
+        version: "1.0",
+        device: "Apple TV",
+        platform: "tvOS",
+        deviceName: "Apple TV"
+    )
+    let authState = AuthState(plexService: plexService, linkService: linkService)
+
+    return ContentView()
         .modelContainer(for: Item.self, inMemory: true)
-        .environmentObject(PlexService())
+        .environmentObject(plexService)
         .environmentObject(ChannelStore())
+        .environmentObject(authState)
 }

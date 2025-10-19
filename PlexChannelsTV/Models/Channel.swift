@@ -86,8 +86,8 @@ struct Channel: Identifiable, Codable, Hashable {
             position -= duration
         }
 
-        if let last = items.enumerated().last {
-            return (last.offset, last.element, 0)
+        if let lastIndex = items.indices.last {
+            return (lastIndex, items[lastIndex], 0)
         }
         return nil
     }
@@ -104,5 +104,32 @@ struct Channel: Identifiable, Codable, Hashable {
 
     func nowPlayingTitle(at date: Date = .init()) -> String? {
         nowPlaying(at: date)?.title
+    }
+
+    func timeRemaining(at date: Date = .init()) -> TimeInterval? {
+        guard let position = playbackPosition(at: date) else { return nil }
+        return max(0, position.media.duration - position.offset)
+    }
+
+    func nextUp(after date: Date = .init()) -> Media? {
+        guard let position = playbackPosition(at: date) else { return nil }
+        guard !items.isEmpty else { return nil }
+        let nextIndex = (position.index + 1) % items.count
+        return items[nextIndex]
+    }
+}
+
+extension Channel.Media {
+    static func from(_ item: PlexMediaItem) -> Channel.Media? {
+        guard let duration = item.duration, duration > 0 else { return nil }
+        let firstPart = item.media.first?.parts.first
+        return Channel.Media(
+            id: item.ratingKey,
+            title: item.title ?? "Untitled",
+            duration: TimeInterval(duration) / 1000.0,
+            metadataKey: item.key,
+            partKey: firstPart?.key,
+            partID: firstPart?.id
+        )
     }
 }

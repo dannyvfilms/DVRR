@@ -45,7 +45,7 @@ struct AddChannelView: View {
                 }
             }
         }
-        .listStyle(.insetGrouped)
+        .listStyle(.plain)
         .navigationTitle("Add Channel")
         .overlay {
             if creatingLibraryKey != nil {
@@ -66,7 +66,7 @@ struct AddChannelView: View {
     private func libraryRow(for library: PlexLibrary) -> some View {
         HStack(spacing: 16) {
             Image(systemName: iconName(for: library.type))
-                .foregroundStyle(.accent)
+                .foregroundColor(.accentColor)
                 .frame(width: 32)
 
             VStack(alignment: .leading, spacing: 4) {
@@ -113,7 +113,13 @@ struct AddChannelView: View {
         Task { @MainActor in
             defer { creatingLibraryKey = nil }
             do {
-                let channel = try await channelStore.createChannel(from: library, using: plexService)
+                let channel = try await channelStore.createChannel(
+                    named: library.title,
+                    from: library,
+                    shuffle: false,
+                    startAt: Date(),
+                    using: plexService
+                )
                 dismiss()
                 DispatchQueue.main.async {
                     onChannelCreated(channel)
