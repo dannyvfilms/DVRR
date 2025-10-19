@@ -56,6 +56,15 @@ final class ChannelStore: ObservableObject {
         channels.first { $0.libraryKey == library.key }
     }
 
+    @discardableResult
+    func addChannel(_ channel: Channel) -> Bool {
+        if channels.contains(where: { $0.libraryKey == channel.libraryKey || $0.name == channel.name }) {
+            return false
+        }
+        channels.append(channel)
+        return true
+    }
+
     func createChannel(
         named customName: String? = nil,
         from library: PlexLibrary,
@@ -88,7 +97,9 @@ final class ChannelStore: ObservableObject {
                 items: mediaItems
             )
 
-            channels.append(channel)
+            guard addChannel(channel) else {
+                throw ChannelCreationError.duplicate
+            }
             return channel
         } catch let error as ChannelCreationError {
             throw error

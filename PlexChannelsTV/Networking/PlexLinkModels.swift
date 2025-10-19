@@ -55,6 +55,7 @@ struct ResourceDevice: Codable {
     let clientIdentifier: String
     let accessToken: String?
     let connections: [Connection]
+    let publicAddressMatches: Bool?
 
     struct Connection: Codable {
         let uri: URL
@@ -107,6 +108,15 @@ struct ResourceDevice: Codable {
         clientIdentifier = try container.decodeIfPresent(String.self, forKey: .clientIdentifier) ?? ""
         accessToken = try container.decodeIfPresent(String.self, forKey: .accessToken)
         connections = try container.decodeIfPresent([Connection].self, forKey: .connections) ?? []
+        if let boolValue = try? container.decode(Bool.self, forKey: .publicAddressMatches) {
+            publicAddressMatches = boolValue
+        } else if let intValue = try? container.decode(Int.self, forKey: .publicAddressMatches) {
+            publicAddressMatches = intValue != 0
+        } else if let stringValue = try? container.decode(String.self, forKey: .publicAddressMatches) {
+            publicAddressMatches = NSString(string: stringValue).boolValue
+        } else {
+            publicAddressMatches = nil
+        }
     }
 
     init(
@@ -114,13 +124,15 @@ struct ResourceDevice: Codable {
         provides: String,
         clientIdentifier: String,
         accessToken: String?,
-        connections: [Connection]
+        connections: [Connection],
+        publicAddressMatches: Bool?
     ) {
         self.name = name
         self.provides = provides
         self.clientIdentifier = clientIdentifier
         self.accessToken = accessToken
         self.connections = connections
+        self.publicAddressMatches = publicAddressMatches
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -129,6 +141,7 @@ struct ResourceDevice: Codable {
         case clientIdentifier
         case accessToken
         case connections
+        case publicAddressMatches
     }
 
     var capabilities: Set<String> {
@@ -138,7 +151,7 @@ struct ResourceDevice: Codable {
 
 struct ChosenServer {
     let device: ResourceDevice
-    let connection: ResourceDevice.Connection
+    let connections: [ResourceDevice.Connection]
     let accessToken: String
 }
 

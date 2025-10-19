@@ -132,36 +132,56 @@ final class PlexLinkService {
     func chooseBestServer(_ devices: [ResourceDevice]) -> ChosenServer? {
         let serverDevices = devices.filter { $0.capabilities.contains("server") }
 
-        let sorted = serverDevices.sorted { lhs, rhs in
-            let lhsPreferred = preferredConnection(for: lhs)
-            let rhsPreferred = preferredConnection(for: rhs)
-            return score(for: lhsPreferred) > score(for: rhsPreferred)
+        let candidates = serverDevices.compactMap { device -> (ResourceDevice, [ResourceDevice.Connection], Int)? in
+            let connections = sortedConnections(for: device)
+            guard let bestConnection = connections.first else { return nil }
+            let preferLocal = device.publicAddressMatches ?? true
+            let score = score(for: bestConnection, preferLocal: preferLocal)
+            return (device, connections, score)
         }
 
-        guard let device = sorted.first, let connection = preferredConnection(for: device) else {
+        guard let best = candidates.max(by: { $0.2 < $1.2 }) else {
             return nil
         }
 
-        let serverToken = device.accessToken ?? ""
-        return ChosenServer(device: device, connection: connection, accessToken: serverToken)
+        let serverToken = best.0.accessToken ?? ""
+        return ChosenServer(device: best.0, connections: best.1, accessToken: serverToken)
     }
 
-    private func preferredConnection(for device: ResourceDevice) -> ResourceDevice.Connection? {
+    private func sortedConnections(for device: ResourceDevice) -> [ResourceDevice.Connection] {
         let httpsConnections = device.connections.filter { $0.uri.scheme?.lowercased() == "https" }
+        let candidates = httpsConnections.isEmpty ? device.connections : httpsConnections
+        let preferLocal = device.publicAddressMatches ?? true
+        return candidates.sorted { lhs, rhs in
+            score(for: lhs, preferLocal: preferLocal) > score(for: rhs, preferLocal: preferLocal)
+        }
+    }
 
-        let sorted = httpsConnections.sorted { lhs, rhs in
-            score(for: lhs) > score(for: rhs)
+    private func score(for connection: ResourceDevice.Connection, preferLocal: Bool) -> Int {
+        var score = 0
+        let isLocal = connection.local ?? false
+        let isRelay = connection.relay ?? false
+        let scheme = connection.uri.scheme?.lowercased()
+
+        if scheme == "https" {
+            score += 2
+        } else if scheme == "http" {
+            score += 1
         }
 
-        return sorted.first ?? device.connections.first
-    }
+        if preferLocal {
+            if isLocal { score += 6 }
+        } else {
+            if !isLocal { score += 6 }
+            if isLocal { score -= 3 }
+        }
 
-    private func score(for connection: ResourceDevice.Connection?) -> Int {
-        guard let connection else { return -1 }
-        var score = 0
-        if connection.local == true { score += 4 }
-        if connection.relay == false { score += 2 }
-        if connection.uri.scheme?.lowercased() == "https" { score += 1 }
+        if !isRelay {
+            score += 3
+        } else {
+            score -= 1
+        }
+
         return score
     }
 

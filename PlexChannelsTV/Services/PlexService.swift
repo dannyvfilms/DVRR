@@ -17,6 +17,7 @@ final class PlexService: ObservableObject {
             let name: String
             let baseURL: URL
             let accessToken: String
+            let fallbackURLs: [URL]
         }
 
         let accountToken: String
@@ -50,6 +51,17 @@ final class PlexService: ObservableObject {
                 return "Plex API error: \(error.localizedDescription)"
             case .unknown(let error):
                 return "Unexpected Plex error: \(error.localizedDescription)"
+            }
+        }
+    }
+
+    enum PlaybackError: LocalizedError {
+        case noStreamURL
+
+        var errorDescription: String? {
+            switch self {
+            case .noStreamURL:
+                return "Unable to construct a stream URL for this media."
             }
         }
     }
@@ -120,39 +132,34 @@ final class PlexService: ObservableObject {
                 throw ServiceError.unableToLocateServer
             }
 
-            guard let baseURL = makeURL(from: selection.connection) else {
-                throw ServiceError.unableToCreateServerURL
-            }
-
-            let librariesResponse: Plex.Request.Libraries.Response = try await perform(
-                Plex.Request.Libraries(),
-                baseURL: baseURL,
+            let resolution = try await resolveConnections(
+                selection.connections,
                 token: selection.serverToken
             )
-
-            let libraries = librariesResponse.mediaContainer.directory
 
             let server = Session.Server(
                 identifier: selection.resource.clientIdentifier,
                 name: selection.resource.name,
-                baseURL: baseURL,
-                accessToken: selection.serverToken
+                baseURL: resolution.baseURL,
+                accessToken: selection.serverToken,
+                fallbackURLs: resolution.fallbackURLs
             )
 
             let newSession = Session(
                 accountToken: token,
                 user: authResponse.user,
                 server: server,
-                libraries: libraries
+                libraries: resolution.libraries
             )
 
             credentialStore.storeSession(
                 PlexCredentialStore.StoredSession(
                     accountToken: token,
                     serverAccessToken: selection.serverToken,
-                    serverURL: baseURL,
+                    serverURL: resolution.baseURL,
                     serverName: selection.resource.name,
-                    serverIdentifier: selection.resource.clientIdentifier
+                    serverIdentifier: selection.resource.clientIdentifier,
+                    fallbackServerURLs: resolution.fallbackURLs
                 )
             )
 
@@ -177,21 +184,28 @@ final class PlexService: ObservableObject {
     func refreshLibraries() async throws {
         guard let currentSession = session else { return }
 
-        do {
-            let response: Plex.Request.Libraries.Response = try await perform(
-                Plex.Request.Libraries(),
-                baseURL: currentSession.server.baseURL,
-                token: currentSession.server.accessToken
-            )
+        let token = currentSession.server.accessToken
 
-            let updatedSession = Session(
-                accountToken: currentSession.accountToken,
-                user: currentSession.user,
-                server: currentSession.server,
+        do {
+            let response: Plex.Request.Libraries.Response = try await performWithServerFallback { baseURL in
+                try await self.perform(
+                    Plex.Request.Libraries(),
+                    baseURL: baseURL,
+                    token: token
+                )
+            }
+
+            guard let activeSession = session else { return }
+            session = Session(
+                accountToken: activeSession.accountToken,
+                user: activeSession.user,
+                server: activeSession.server,
                 libraries: response.mediaContainer.directory
             )
-
-            session = updatedSession
+        } catch let error as ServiceError {
+            lastError = error
+            print("PlexService.refreshLibraries error: \(error.localizedDescription)")
+            throw error
         } catch let error as PlexError {
             let serviceError = ServiceError.plex(error)
             lastError = serviceError
@@ -231,17 +245,28 @@ final class PlexService: ObservableObject {
     }
 
     func fetchLibraryItems(for library: PlexLibrary, limit: Int? = nil) async throws -> [PlexMediaItem] {
+        try await fetchLibraryItems(for: library, mediaType: library.type, limit: limit)
+    }
+
+    func fetchLibraryItems(
+        for library: PlexLibrary,
+        mediaType: PlexMediaType,
+        limit: Int? = nil
+    ) async throws -> [PlexMediaItem] {
         guard let currentSession = session else {
             throw ServiceError.noActiveSession
         }
+        let token = currentSession.server.accessToken
 
-        return try await fetchLibraryItems(
-            libraryKey: library.key,
-            mediaType: library.type,
-            baseURL: currentSession.server.baseURL,
-            token: currentSession.server.accessToken,
-            limit: limit
-        )
+        return try await performWithServerFallback { baseURL in
+            try await self.fetchLibraryItems(
+                libraryKey: library.key,
+                mediaType: mediaType,
+                baseURL: baseURL,
+                token: token,
+                limit: limit
+            )
+        }
     }
 
     func establishSession(
@@ -249,44 +274,73 @@ final class PlexService: ObservableObject {
         serverName: String,
         serverIdentifier: String,
         serverURL: URL,
+        fallbackServerURLs: [URL] = [],
         serverAccessToken: String
     ) async throws {
-        let response: Plex.Request.Libraries.Response = try await perform(
-            Plex.Request.Libraries(),
-            baseURL: serverURL,
-            token: serverAccessToken
-        )
+        let urls = orderedUnique([serverURL] + fallbackServerURLs)
+        var lastError: Error?
 
-        let server = Session.Server(
-            identifier: serverIdentifier,
-            name: serverName,
-            baseURL: serverURL,
-            accessToken: serverAccessToken
-        )
+        for (index, url) in urls.enumerated() {
+            do {
+                let response: Plex.Request.Libraries.Response = try await perform(
+                    Plex.Request.Libraries(),
+                    baseURL: url,
+                    token: serverAccessToken
+                )
 
-        let newSession = Session(
-            accountToken: accountToken,
-            user: nil,
-            server: server,
-            libraries: response.mediaContainer.directory
-        )
+                let fallback = orderedUnique(urls.enumerated().compactMap { idx, candidate in
+                    idx == index ? nil : candidate
+                })
 
-        let stored = PlexCredentialStore.StoredSession(
-            accountToken: accountToken,
-            serverAccessToken: serverAccessToken,
-            serverURL: serverURL,
-            serverName: serverName,
-            serverIdentifier: serverIdentifier
-        )
-        credentialStore.storeSession(stored)
-        self.session = newSession
+                let server = Session.Server(
+                    identifier: serverIdentifier,
+                    name: serverName,
+                    baseURL: url,
+                    accessToken: serverAccessToken,
+                    fallbackURLs: fallback
+                )
+
+                let newSession = Session(
+                    accountToken: accountToken,
+                    user: nil,
+                    server: server,
+                    libraries: response.mediaContainer.directory
+                )
+
+                let stored = PlexCredentialStore.StoredSession(
+                    accountToken: accountToken,
+                    serverAccessToken: serverAccessToken,
+                    serverURL: url,
+                    serverName: serverName,
+                    serverIdentifier: serverIdentifier,
+                    fallbackServerURLs: fallback
+                )
+                credentialStore.storeSession(stored)
+                self.session = newSession
+                return
+            } catch {
+                lastError = error
+                print("[PlexService] establishSession connection \(url.absoluteString) failed: \(error)")
+                continue
+            }
+        }
+
+        if let serviceError = lastError as? ServiceError {
+            throw serviceError
+        }
+        if let lastError {
+            throw ServiceError.unknown(lastError)
+        }
+        throw ServiceError.failedToLoadLibraries
     }
 
     func buildImageURL(from path: String, width: Int? = nil, height: Int? = nil) -> URL? {
         guard let session else { return nil }
-        guard let baseURL = URL(string: path, relativeTo: session.server.baseURL) ??
-            session.server.baseURL.appendingPathComponent(path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))) else {
-            return nil
+        let baseURL: URL
+        if let resolved = URL(string: path, relativeTo: session.server.baseURL) {
+            baseURL = resolved
+        } else {
+            baseURL = session.server.baseURL.appendingPathComponent(path.trimmingCharacters(in: CharacterSet(charactersIn: "/")))
         }
 
         guard var components = URLComponents(url: baseURL, resolvingAgainstBaseURL: true) else { return nil }
@@ -326,6 +380,16 @@ final class PlexService: ObservableObject {
         )
     }
 
+    func quickPlayURL(for media: Channel.Media) async throws -> URL {
+        if let direct = streamURL(for: media, preferTranscode: false) {
+            return direct
+        }
+        if let fallback = streamURL(for: media, preferTranscode: true) {
+            return fallback
+        }
+        throw PlaybackError.noStreamURL
+    }
+
     func signOut() {
         credentialStore.storeSession(nil)
         session = nil
@@ -341,36 +405,62 @@ final class PlexService: ObservableObject {
     }
 
     private func restorePersistedSession(using stored: PlexCredentialStore.StoredSession) async {
-        do {
-            let response: Plex.Request.Libraries.Response = try await perform(
-                Plex.Request.Libraries(),
-                baseURL: stored.serverURL,
-                token: stored.serverAccessToken
-            )
+        let urls = orderedUnique([stored.serverURL] + (stored.fallbackServerURLs ?? []))
+        var lastError: Error?
 
-            let server = Session.Server(
-                identifier: stored.serverIdentifier,
-                name: stored.serverName,
-                baseURL: stored.serverURL,
-                accessToken: stored.serverAccessToken
-            )
+        for (index, url) in urls.enumerated() {
+            do {
+                let response: Plex.Request.Libraries.Response = try await perform(
+                    Plex.Request.Libraries(),
+                    baseURL: url,
+                    token: stored.serverAccessToken
+                )
 
-            session = Session(
-                accountToken: stored.accountToken,
-                user: nil,
-                server: server,
-                libraries: response.mediaContainer.directory
-            )
-        } catch {
-            print("PlexService.restorePersistedSession error: \(error)")
-            credentialStore.storeSession(nil)
+                let fallback = orderedUnique(urls.enumerated().compactMap { idx, candidate in
+                    idx == index ? nil : candidate
+                })
+
+                let server = Session.Server(
+                    identifier: stored.serverIdentifier,
+                    name: stored.serverName,
+                    baseURL: url,
+                    accessToken: stored.serverAccessToken,
+                    fallbackURLs: fallback
+                )
+
+                session = Session(
+                    accountToken: stored.accountToken,
+                    user: nil,
+                    server: server,
+                    libraries: response.mediaContainer.directory
+                )
+
+                credentialStore.storeSession(
+                    PlexCredentialStore.StoredSession(
+                        accountToken: stored.accountToken,
+                        serverAccessToken: stored.serverAccessToken,
+                        serverURL: url,
+                        serverName: stored.serverName,
+                        serverIdentifier: stored.serverIdentifier,
+                        fallbackServerURLs: fallback
+                    )
+                )
+                return
+            } catch {
+                lastError = error
+                print("PlexService.restorePersistedSession connection \(url.absoluteString) failed: \(error)")
+                continue
+            }
         }
+        let message = lastError?.localizedDescription ?? "Unknown"
+        print("PlexService.restorePersistedSession error: \(message)")
+        credentialStore.storeSession(nil)
     }
 
     private func selectBestServer(
         from resources: [PlexResource],
         fallbackToken: String
-    ) -> (resource: PlexResource, connection: PlexConnection, serverToken: String)? {
+    ) -> (resource: PlexResource, connections: [PlexConnection], serverToken: String)? {
         let servers = resources.filter { $0.capabilities.contains(.server) }
             .sorted { lhs, rhs in
                 let lhsOwned = lhs.owned ?? false
@@ -382,21 +472,21 @@ final class PlexService: ObservableObject {
             }
 
         for resource in servers {
-            guard let connection = bestConnection(for: resource) else { continue }
+            let connections = sortedConnections(for: resource)
+            guard !connections.isEmpty else { continue }
 
             let serverToken = resource.accessToken ?? fallbackToken
-            return (resource, connection, serverToken)
+            return (resource, connections, serverToken)
         }
 
         return nil
     }
 
-    private func bestConnection(for resource: PlexResource) -> PlexConnection? {
-        guard !resource.connections.isEmpty else { return nil }
-
+    private func sortedConnections(for resource: PlexResource) -> [PlexConnection] {
+        guard !resource.connections.isEmpty else { return [] }
         return resource.connections.sorted { lhs, rhs in
             score(for: lhs) > score(for: rhs)
-        }.first
+        }
     }
 
     private func score(for connection: PlexConnection) -> Int {
@@ -417,6 +507,119 @@ final class PlexService: ObservableObject {
             return components.url
         }
         return directURL
+    }
+
+    private func resolveConnections(
+        _ connections: [PlexConnection],
+        token: String
+    ) async throws -> (baseURL: URL, fallbackURLs: [URL], libraries: [PlexLibrary]) {
+        var lastError: Error?
+        for (index, connection) in connections.enumerated() {
+            guard let url = makeURL(from: connection) else { continue }
+            do {
+                let response: Plex.Request.Libraries.Response = try await perform(
+                    Plex.Request.Libraries(),
+                    baseURL: url,
+                    token: token
+                )
+                let libraries = response.mediaContainer.directory
+                let fallback = orderedUnique(
+                    connections.enumerated().compactMap { idx, element in
+                        guard idx != index, let candidateURL = makeURL(from: element) else { return nil }
+                        return candidateURL
+                    }
+                )
+                return (url, fallback, libraries)
+            } catch {
+                lastError = error
+                print("[PlexService] Connection \(url.absoluteString) failed with error: \(error)")
+                continue
+            }
+        }
+
+        if let serviceError = lastError as? ServiceError {
+            throw serviceError
+        }
+        if let lastError {
+            throw ServiceError.unknown(lastError)
+        }
+        throw ServiceError.unableToCreateServerURL
+    }
+
+    private func orderedUnique(_ urls: [URL]) -> [URL] {
+        var seen = Set<URL>()
+        var result: [URL] = []
+        for url in urls {
+            if seen.insert(url).inserted {
+                result.append(url)
+            }
+        }
+        return result
+    }
+
+    private func performWithServerFallback<T>(
+        operation: @escaping (_ baseURL: URL) async throws -> T
+    ) async throws -> T {
+        guard let currentSession = session else {
+            throw ServiceError.noActiveSession
+        }
+
+        let urls = [currentSession.server.baseURL] + currentSession.server.fallbackURLs
+        var lastError: Error?
+
+        for (index, url) in urls.enumerated() {
+            do {
+                let result = try await operation(url)
+                if index != 0 {
+                    promoteActiveServer(to: url, allURLs: urls, preservingLibraries: currentSession.libraries)
+                }
+                return result
+            } catch {
+                lastError = error
+                continue
+            }
+        }
+
+        if let serviceError = lastError as? ServiceError {
+            throw serviceError
+        }
+        if let lastError {
+            throw ServiceError.unknown(lastError)
+        }
+        throw ServiceError.failedToLoadLibraries
+    }
+
+    private func promoteActiveServer(
+        to activeURL: URL,
+        allURLs: [URL],
+        preservingLibraries libraries: [PlexLibrary]
+    ) {
+        guard let currentSession = session else { return }
+        let fallback = orderedUnique(allURLs.filter { $0 != activeURL })
+        let updatedServer = Session.Server(
+            identifier: currentSession.server.identifier,
+            name: currentSession.server.name,
+            baseURL: activeURL,
+            accessToken: currentSession.server.accessToken,
+            fallbackURLs: fallback
+        )
+        let updatedSession = Session(
+            accountToken: currentSession.accountToken,
+            user: currentSession.user,
+            server: updatedServer,
+            libraries: libraries
+        )
+        session = updatedSession
+        credentialStore.storeSession(
+            PlexCredentialStore.StoredSession(
+                accountToken: updatedSession.accountToken,
+                serverAccessToken: updatedSession.server.accessToken,
+                serverURL: activeURL,
+                serverName: updatedSession.server.name,
+                serverIdentifier: updatedSession.server.identifier,
+                fallbackServerURLs: fallback
+            )
+        )
     }
 
     private func perform<Request: PlexServiceRequest>(
@@ -470,7 +673,7 @@ final class PlexService: ObservableObject {
         guard let url = URL(string: path, relativeTo: baseURL) else { return nil }
         guard var components = URLComponents(url: url, resolvingAgainstBaseURL: true) else { return nil }
 
-        var queryItems: [URLQueryItem] = [
+        let queryItems: [URLQueryItem] = [
             .init(name: "X-Plex-Token", value: token),
             .init(name: "path", value: "/library/metadata/\(media.id)"),
             .init(name: "offset", value: String(Int(offset))),
@@ -494,6 +697,7 @@ final class PlexCredentialStore {
         let serverURL: URL
         let serverName: String
         let serverIdentifier: String
+        let fallbackServerURLs: [URL]?
     }
 
     private enum Keys {

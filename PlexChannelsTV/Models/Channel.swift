@@ -17,6 +17,15 @@ struct Channel: Identifiable, Codable, Hashable {
         let metadataKey: String?
         let partKey: String?
         let partID: Int?
+        let metadata: Metadata?
+
+        struct Metadata: Codable, Hashable {
+            let title: String?
+            let year: Int?
+            let genres: [String]
+            let addedAt: Date?
+            let type: PlexMediaType?
+        }
 
         init(
             id: String,
@@ -24,7 +33,8 @@ struct Channel: Identifiable, Codable, Hashable {
             duration: TimeInterval,
             metadataKey: String? = nil,
             partKey: String? = nil,
-            partID: Int? = nil
+            partID: Int? = nil,
+            metadata: Metadata? = nil
         ) {
             self.id = id
             self.title = title
@@ -32,6 +42,7 @@ struct Channel: Identifiable, Codable, Hashable {
             self.metadataKey = metadataKey
             self.partKey = partKey
             self.partID = partID
+            self.metadata = metadata
         }
     }
 
@@ -129,7 +140,14 @@ extension Channel.Media {
             duration: TimeInterval(duration) / 1000.0,
             metadataKey: item.key,
             partKey: firstPart?.key,
-            partID: firstPart?.id
+            partID: firstPart?.id,
+            metadata: Channel.Media.Metadata(
+                title: item.title,
+                year: item.year,
+                genres: item.genres.map { $0.tag },
+                addedAt: item.addedAt,
+                type: item.type
+            )
         )
     }
 }

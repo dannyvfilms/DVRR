@@ -54,7 +54,8 @@ private final class XMLResourceParser: NSObject, XMLParserDelegate {
                 provides: currentDeviceAttributes["provides"] ?? "",
                 clientIdentifier: currentDeviceAttributes["clientIdentifier"] ?? "",
                 accessToken: currentDeviceAttributes["accessToken"],
-                connections: currentConnections
+                connections: currentConnections,
+                publicAddressMatches: currentDeviceAttributes["publicAddressMatches"].map { NSString(string: $0).boolValue }
             )
             devices.append(device)
             currentDeviceAttributes = [:]

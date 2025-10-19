@@ -26,23 +26,26 @@ final class AuthState: ObservableObject {
     private let linkService: PlexLinkService
     private let keychain: KeychainStorage
     private let keychainAccount = "plex.auth.token"
+    private let channelSeeder: ChannelSeeder?
 
     private var cancellables: Set<AnyCancellable> = []
 
     init(
         plexService: PlexService,
         linkService: PlexLinkService,
-        keychain: KeychainStorage = .shared
+        keychain: KeychainStorage = .shared,
+        channelSeeder: ChannelSeeder? = nil
     ) {
         self.plexService = plexService
         self.linkService = linkService
         self.keychain = keychain
+        self.channelSeeder = channelSeeder
 
         plexService.$session
             .receive(on: DispatchQueue.main)
             .sink { [weak self] session in
-                guard let self else { return }
-                self?.handleSessionUpdate(session)
+                guard let self = self else { return }
+                self.handleSessionUpdate(session)
             }
             .store(in: &cancellables)
 
@@ -68,20 +71,35 @@ final class AuthState: ObservableObject {
 
         let account = try? await linkService.fetchAccount(authToken: authToken)
         let serverToken = chosen.accessToken.isEmpty ? authToken : chosen.accessToken
+
+        let connectionURLs = chosen.connections.map { $0.uri }
+        guard let primaryURL = connectionURLs.first else {
+            throw LinkError.invalidResponse
+        }
+
         try await plexService.establishSession(
             accountToken: authToken,
             serverName: chosen.device.name,
             serverIdentifier: chosen.device.clientIdentifier,
-            serverURL: chosen.connection.uri,
+            serverURL: primaryURL,
+            fallbackServerURLs: Array(connectionURLs.dropFirst()),
             serverAccessToken: serverToken
         )
         try keychain.store(token: authToken, account: keychainAccount)
-        print("[AuthState] Linked to server \(chosen.device.name) at \(chosen.connection.uri.absoluteString)")
+        let activeURL = plexService.session?.server.baseURL ?? primaryURL
+        print("[AuthState] Linked to server \(chosen.device.name) at \(activeURL.absoluteString)")
+
+        if let seeder = channelSeeder, let libraries = plexService.session?.libraries {
+            Task {
+                await seeder.seedIfNeeded(libraries: libraries)
+            }
+        }
 
         let libraries = plexService.session?.libraries ?? []
+        print("[AuthState] Library count: \(libraries.count)")
         let info = PlexSessionInfo(
             authToken: authToken,
-            serverURI: chosen.connection.uri,
+            serverURI: activeURL,
             serverAccessToken: serverToken,
             serverName: chosen.device.name,
             libraryCount: libraries.count,
@@ -126,23 +144,35 @@ final class AuthState: ObservableObject {
 
             let account = try? await linkService.fetchAccount(authToken: token)
             let serverToken = chosen.accessToken.isEmpty ? token : chosen.accessToken
+
+            let connectionURLs = chosen.connections.map { $0.uri }
+            guard let primaryURL = connectionURLs.first else { return }
+
             try await plexService.establishSession(
                 accountToken: token,
                 serverName: chosen.device.name,
                 serverIdentifier: chosen.device.clientIdentifier,
-                serverURL: chosen.connection.uri,
+                serverURL: primaryURL,
+                fallbackServerURLs: Array(connectionURLs.dropFirst()),
                 serverAccessToken: serverToken
             )
             let libraries = plexService.session?.libraries ?? []
+            print("[AuthState] Library count: \(libraries.count)")
+            let activeURL = plexService.session?.server.baseURL ?? primaryURL
             let info = PlexSessionInfo(
                 authToken: token,
-                serverURI: chosen.connection.uri,
+                serverURI: activeURL,
                 serverAccessToken: serverToken,
                 serverName: chosen.device.name,
                 libraryCount: libraries.count,
                 accountName: account?.title ?? account?.username ?? "Plex User"
             )
             self.session = info
+            if let seeder = channelSeeder {
+                Task {
+                    await seeder.seedIfNeeded(libraries: libraries)
+                }
+            }
         } catch {
             keychain.deleteToken(account: keychainAccount)
             linkingError = error.localizedDescription
@@ -162,6 +192,12 @@ final class AuthState: ObservableObject {
             )
             self.session = info
             try? keychain.store(token: info.authToken, account: keychainAccount)
+            print("[AuthState] Session updated for \(session.server.baseURL.absoluteString) with \(session.libraries.count) libraries")
+            if let seeder = channelSeeder {
+                Task {
+                    await seeder.seedIfNeeded(libraries: session.libraries)
+                }
+            }
         } else {
             self.session = nil
             keychain.deleteToken(account: keychainAccount)

@@ -56,19 +56,41 @@ struct QuickPlayView: View {
             player?.pause()
             player = nil
         }
-        .navigationTitle(item.title)
-        .navigationBarTitleDisplayMode(.inline)
+        .alert("Playback Error", isPresented: Binding(
+            get: { playbackError != nil },
+            set: { if !$0 { playbackError = nil } }
+        )) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text(playbackError ?? "An unknown error occurred")
+        }
     }
 
     private func startPlayback() async {
-        guard let url = plexService.streamURL(for: item.media) else {
-            playbackError = "Unable to construct a stream URL."
+        if let provided = item.streamURL {
+            await MainActor.run {
+                startPlayer(with: provided)
+            }
             return
         }
 
+        do {
+            let url = try await plexService.quickPlayURL(for: item.media)
+            await MainActor.run {
+                startPlayer(with: url)
+            }
+        } catch {
+            await MainActor.run {
+                playbackError = error.localizedDescription
+            }
+        }
+    }
+
+    @MainActor
+    private func startPlayer(with url: URL) {
         print("[QuickPlay] Streaming \(item.title) via \(url.absoluteString)")
-        let item = AVPlayerItem(url: url)
-        let player = AVPlayer(playerItem: item)
+        let playerItem = AVPlayerItem(url: url)
+        let player = AVPlayer(playerItem: playerItem)
         self.player = player
         player.play()
     }

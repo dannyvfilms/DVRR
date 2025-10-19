@@ -19,6 +19,7 @@ struct ChannelPlayerView: View {
     @State private var currentPlayback: (media: Channel.Media, offset: TimeInterval)?
     @State private var playbackError: String?
     @State private var timer: Timer?
+    @State private var pendingSeekOffset: TimeInterval?
 
     var body: some View {
         ZStack(alignment: .bottomLeading) {
@@ -81,26 +82,26 @@ struct ChannelPlayerView: View {
     private func load(media: Channel.Media, offset: TimeInterval, preferTranscode: Bool) async {
         guard let streamURL = plexService.streamURL(for: media, offset: offset, preferTranscode: preferTranscode) else {
             playbackError = "Unable to construct a Plex stream URL."
+            print("[ChannelPlayer] Failed to build stream URL for \(media.title)")
             return
         }
 
+        print("[ChannelPlayer] Loading \(media.title) via \(preferTranscode ? "transcode" : "direct") stream")
         let playerItem = AVPlayerItem(url: streamURL)
         currentPlayback = (media, offset)
         playbackError = nil
+        pendingSeekOffset = offset
 
         if player == nil {
             player = AVPlayer(playerItem: playerItem)
+            player?.actionAtItemEnd = .pause
         } else {
             player?.replaceCurrentItem(with: playerItem)
         }
 
         observePlaybackEnd(for: playerItem)
         observeStatus(for: playerItem, media: media, offset: offset, preferTranscode: preferTranscode)
-
-        let targetTime = CMTime(seconds: offset, preferredTimescale: 600)
-        player?.seek(to: targetTime, toleranceBefore: .zero, toleranceAfter: .zero) { _ in
-            player?.play()
-        }
+        attemptSeekIfReady(for: playerItem, offset: offset)
     }
 
     @MainActor
@@ -122,6 +123,8 @@ struct ChannelPlayerView: View {
         statusObserver = item.observe(\.status, options: [.new, .initial]) { _, _ in
             DispatchQueue.main.async {
                 switch item.status {
+                case .readyToPlay:
+                    self.attemptSeekIfReady(for: item, offset: offset)
                 case .failed:
                     if !preferTranscode {
                         Task { await load(media: media, offset: offset, preferTranscode: true) }
@@ -132,6 +135,29 @@ struct ChannelPlayerView: View {
                     break
                 }
             }
+        }
+    }
+
+    @MainActor
+    private func attemptSeekIfReady(for item: AVPlayerItem, offset: TimeInterval) {
+        guard player?.currentItem === item else { return }
+
+        if item.status == .readyToPlay {
+            let targetOffset = pendingSeekOffset ?? offset
+            pendingSeekOffset = nil
+            seekCurrentPlayer(to: targetOffset)
+        } else {
+            pendingSeekOffset = offset
+        }
+    }
+
+    @MainActor
+    private func seekCurrentPlayer(to offset: TimeInterval) {
+        let clampedOffset = max(0, offset)
+        let targetTime = CMTime(seconds: clampedOffset, preferredTimescale: 600)
+        player?.seek(to: targetTime, toleranceBefore: .zero, toleranceAfter: .zero) { [weak self] finished in
+            guard finished else { return }
+            self?.player?.play()
         }
     }
 

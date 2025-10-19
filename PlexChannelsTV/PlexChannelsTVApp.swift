@@ -28,6 +28,7 @@ struct PlexChannelsTVApp: App {
 
     init() {
         let plexService = PlexService()
+        let channelStore = ChannelStore()
         let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.0"
         let linkService = PlexLinkService(
             clientIdentifier: plexService.clientIdentifier,
@@ -37,10 +38,15 @@ struct PlexChannelsTVApp: App {
             platform: "tvOS",
             deviceName: "Apple TV"
         )
+        let channelSeeder = ChannelSeeder(plexService: plexService, channelStore: channelStore)
 
         _plexService = StateObject(wrappedValue: plexService)
-        _authState = StateObject(wrappedValue: AuthState(plexService: plexService, linkService: linkService))
-        _channelStore = StateObject(wrappedValue: ChannelStore())
+        _channelStore = StateObject(wrappedValue: channelStore)
+        _authState = StateObject(wrappedValue: AuthState(
+            plexService: plexService,
+            linkService: linkService,
+            channelSeeder: channelSeeder
+        ))
     }
 
     var body: some Scene {
