@@ -11,6 +11,17 @@ import PlexKit
 @MainActor
 final class PlexService: ObservableObject {
 
+    enum StreamKind: String {
+        case direct = "direct"
+        case universalTranscode = "universal-transcode"
+    }
+
+    struct StreamDescriptor {
+        let url: URL
+        let kind: StreamKind
+        let offset: TimeInterval
+    }
+
     struct Session {
         struct Server {
             let identifier: String
@@ -72,9 +83,15 @@ final class PlexService: ObservableObject {
 
     private let client: Plex
     private let credentialStore: PlexCredentialStore
+    private let productName: String
+    private let clientVersion: String
+    private let platformName: String
+    private let deviceModel: String
+    private let deviceDisplayName: String
+    private let clientIdentifierValue: String
 
     var clientIdentifier: String {
-        credentialStore.clientIdentifier ?? ""
+        clientIdentifierValue
     }
 
     init(
@@ -82,9 +99,15 @@ final class PlexService: ObservableObject {
         productName: String = "PlexChannelsTV",
         version: String = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.0",
         platform: String = "tvOS",
-        device: String = "Apple TV"
+        device: String = "Apple TV",
+        deviceName: String = "Apple TV"
     ) {
         self.credentialStore = credentialStore
+        self.productName = productName
+        self.clientVersion = version
+        self.platformName = platform
+        self.deviceModel = device
+        self.deviceDisplayName = deviceName
 
         let clientIdentifier: String = {
             if let stored = credentialStore.clientIdentifier {
@@ -94,6 +117,7 @@ final class PlexService: ObservableObject {
             credentialStore.clientIdentifier = generated
             return generated
         }()
+        self.clientIdentifierValue = clientIdentifier
 
         let configuration = URLSessionConfiguration.default
         let info = Plex.ClientInfo(
@@ -102,7 +126,7 @@ final class PlexService: ObservableObject {
             version: version,
             platform: platform,
             device: device,
-            deviceName: device
+            deviceName: deviceName
         )
         self.client = Plex(sessionConfiguration: configuration, clientInfo: info)
 
@@ -356,12 +380,15 @@ final class PlexService: ObservableObject {
         return components.url
     }
 
-    func streamURL(
+    func streamDescriptor(
         for media: Channel.Media,
         offset: TimeInterval = 0,
         preferTranscode: Bool = false
-    ) -> URL? {
-        guard let currentSession = session else { return nil }
+    ) -> StreamDescriptor? {
+        guard let currentSession = session else {
+            print("[PlexService] streamDescriptor unavailable – no active session")
+            return nil
+        }
 
         if !preferTranscode,
            let directURL = directPlayURL(
@@ -369,23 +396,41 @@ final class PlexService: ObservableObject {
                token: currentSession.server.accessToken,
                baseURL: currentSession.server.baseURL
            ) {
-            return directURL
+            print("[PlexService] Prepared direct stream for media \(media.id)")
+            return StreamDescriptor(url: directURL, kind: .direct, offset: offset)
         }
 
-        return transcodeURL(
+        if !preferTranscode {
+            print("[PlexService] No direct stream available for media \(media.id); falling back to transcode")
+        }
+
+        guard let transcode = transcodeURL(
             for: media,
             offset: offset,
             token: currentSession.server.accessToken,
             baseURL: currentSession.server.baseURL
-        )
+        ) else {
+            print("[PlexService] Failed to construct transcode URL for media \(media.id)")
+            return nil
+        }
+        print("[PlexService] Prepared transcode stream for media \(media.id)")
+        return StreamDescriptor(url: transcode, kind: .universalTranscode, offset: offset)
+    }
+
+    func streamURL(
+        for media: Channel.Media,
+        offset: TimeInterval = 0,
+        preferTranscode: Bool = false
+    ) -> URL? {
+        streamDescriptor(for: media, offset: offset, preferTranscode: preferTranscode)?.url
     }
 
     func quickPlayURL(for media: Channel.Media) async throws -> URL {
-        if let direct = streamURL(for: media, preferTranscode: false) {
-            return direct
+        if let direct = streamDescriptor(for: media, preferTranscode: false) {
+            return direct.url
         }
-        if let fallback = streamURL(for: media, preferTranscode: true) {
-            return fallback
+        if let fallback = streamDescriptor(for: media, preferTranscode: true) {
+            return fallback.url
         }
         throw PlaybackError.noStreamURL
     }
@@ -645,8 +690,33 @@ final class PlexService: ObservableObject {
         }
     }
 
+    private func standardQueryItems(token: String) -> [URLQueryItem] {
+        [
+            .init(name: "X-Plex-Token", value: token),
+            .init(name: "X-Plex-Client-Identifier", value: clientIdentifierValue),
+            .init(name: "X-Plex-Product", value: productName),
+            .init(name: "X-Plex-Version", value: clientVersion),
+            .init(name: "X-Plex-Platform", value: platformName),
+            .init(name: "X-Plex-Device", value: deviceModel),
+            .init(name: "X-Plex-Device-Name", value: deviceDisplayName)
+        ]
+    }
+
+    private func mergeStandardQueryItems(into items: [URLQueryItem], token: String) -> [URLQueryItem] {
+        let existing = Set(items.map(\.name))
+        let additional = standardQueryItems(token: token).filter { !existing.contains($0.name) }
+        return items + additional
+    }
+
+    private func streamSessionIdentifier(for media: Channel.Media) -> String {
+        "channels-\(clientIdentifierValue)-\(media.id)"
+    }
+
     private func directPlayURL(for media: Channel.Media, token: String, baseURL: URL) -> URL? {
-        guard let partKey = media.partKey else { return nil }
+        guard let partKey = media.partKey else {
+            print("[PlexService] directPlayURL unavailable – media \(media.id) missing partKey")
+            return nil
+        }
 
         let url: URL
         if let resolved = URL(string: partKey, relativeTo: baseURL) {
@@ -657,8 +727,7 @@ final class PlexService: ObservableObject {
         }
 
         guard var components = URLComponents(url: url, resolvingAgainstBaseURL: true) else { return nil }
-        var items = components.queryItems ?? []
-        items.append(.init(name: "X-Plex-Token", value: token))
+        let items = mergeStandardQueryItems(into: components.queryItems ?? [], token: token)
         components.queryItems = items
         return components.url
     }
@@ -673,15 +742,24 @@ final class PlexService: ObservableObject {
         guard let url = URL(string: path, relativeTo: baseURL) else { return nil }
         guard var components = URLComponents(url: url, resolvingAgainstBaseURL: true) else { return nil }
 
-        let queryItems: [URLQueryItem] = [
-            .init(name: "X-Plex-Token", value: token),
+        var queryItems = standardQueryItems(token: token)
+        let sessionID = streamSessionIdentifier(for: media)
+        queryItems.append(contentsOf: [
             .init(name: "path", value: "/library/metadata/\(media.id)"),
             .init(name: "offset", value: String(Int(offset))),
             .init(name: "protocol", value: "hls"),
             .init(name: "directPlay", value: "0"),
             .init(name: "directStream", value: "1"),
             .init(name: "fastSeek", value: "1"),
-        ]
+            .init(name: "copyts", value: "1"),
+            .init(name: "mediaIndex", value: "0"),
+            .init(name: "partIndex", value: "0"),
+            .init(name: "audioBoost", value: "100"),
+            .init(name: "maxVideoBitrate", value: "20000"),
+            .init(name: "subtitleSize", value: "100"),
+            .init(name: "session", value: sessionID),
+            .init(name: "X-Plex-Session-Identifier", value: sessionID)
+        ])
 
         components.queryItems = queryItems
         return components.url

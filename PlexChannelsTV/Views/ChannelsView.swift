@@ -228,7 +228,8 @@ struct ChannelsView: View {
                         title: item.title ?? "Untitled",
                         thumbURL: thumbURL,
                         media: media,
-                        streamURL: nil
+                        streamURL: nil,
+                        streamKind: nil
                     )
                 }
 
@@ -251,20 +252,15 @@ struct ChannelsView: View {
     }
 
     private func playPreviewItem(_ item: LibraryPreviewItem) {
-        Task {
-            do {
-                let url = try await plexService.quickPlayURL(for: item.media)
-                let enriched = item.withStreamURL(url)
-                await MainActor.run {
-                    print("[ChannelsView] Quick play prepared for \(item.title)")
-                    path.append(.quickPlay(enriched))
-                }
-            } catch {
-                await MainActor.run {
-                    print("[ChannelsView] Quick play failed for \(item.title): \(error)")
-                    quickPlayError = error.localizedDescription
-                }
-            }
+        if let descriptor = plexService.streamDescriptor(for: item.media) ??
+            plexService.streamDescriptor(for: item.media, preferTranscode: true) {
+            let enriched = item.withStreamDescriptor(descriptor)
+            print("[ChannelsView] Quick play prepared for \(item.title) via \(descriptor.kind.rawValue)")
+            path.append(.quickPlay(enriched))
+        } else {
+            let message = PlexService.PlaybackError.noStreamURL.errorDescription ?? "Unable to start playback."
+            print("[ChannelsView] Quick play unavailable for \(item.title): \(message)")
+            quickPlayError = message
         }
     }
 
@@ -435,9 +431,17 @@ struct LibraryPreviewItem: Identifiable, Hashable {
     let thumbURL: URL?
     let media: Channel.Media
     let streamURL: URL?
+    let streamKind: PlexService.StreamKind?
 
-    func withStreamURL(_ url: URL) -> LibraryPreviewItem {
-        LibraryPreviewItem(id: id, title: title, thumbURL: thumbURL, media: media, streamURL: url)
+    func withStreamDescriptor(_ descriptor: PlexService.StreamDescriptor) -> LibraryPreviewItem {
+        LibraryPreviewItem(
+            id: id,
+            title: title,
+            thumbURL: thumbURL,
+            media: media,
+            streamURL: descriptor.url,
+            streamKind: descriptor.kind
+        )
     }
 
     func hash(into hasher: inout Hasher) {

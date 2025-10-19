@@ -47,7 +47,13 @@ Build a native **tvOS** SwiftUI app that signs into a user’s **Plex** account 
 
 ---
 
-## Milestones & Tasks (1–22)
+## Recent updates
+- Task 22 summary: removed inline delete controls from channel cards, moved channel management to a future workflow, and upgraded focus handling to tvOS 17-style `FocusState` with two-parameter `onChange`.
+- Task 23 summary: hardened channel playback negotiation with richer Plex query headers, direct-vs-transcode logging, and Quick Play reuse of prepared stream descriptors.
+
+---
+
+## Milestones & Tasks (1–23)
 
 **1. Env setup** — Create SwiftUI tvOS app in Xcode; run on simulator.  
 **2. Plex API plumbing** — Add headers/client ID; auth & resources; libraries fetch.  
@@ -72,7 +78,8 @@ Build a native **tvOS** SwiftUI app that signs into a user’s **Plex** account 
 **19. Quick-Play polish** — Service method prefers direct play, falls back to HLS; show title; restore focus on back.  
 **20. UX cleanup** — Enforce single-CTA rule; empty state = copy only; when ≥1 channel, default focus = first channel.
 **21. Remote Connections** - Prioritized remote Plex endpoints after PIN linking to avoid off-LAN stalls and added connection ordering tests.
-**22. Channel management workflow** — Move delete/edit actions into a dedicated management flow, restore removal once UX is ready, and migrate focus handling to `FocusState` to resolve tvOS deprecation errors.
+**22. Channel management workflow** — Move delete/edit actions into a dedicated management flow, restore removal once UX is ready, and adopt `FocusState` + tvOS 17 `onChange` semantics to resolve focus deprecation warnings.
+**23. Stream reliability** — Ensure channel/Quick Play taps negotiate direct vs transcode streams with full Plex headers, expose diagnostics, and surface playback errors.
 
 ---
 

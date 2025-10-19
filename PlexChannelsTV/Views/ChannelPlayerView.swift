@@ -20,6 +20,7 @@ struct ChannelPlayerView: View {
     @State private var playbackError: String?
     @State private var timer: Timer?
     @State private var pendingSeekOffset: TimeInterval?
+    @State private var activeStreamKind: PlexService.StreamKind?
 
     var body: some View {
         ZStack(alignment: .bottomLeading) {
@@ -53,6 +54,11 @@ struct ChannelPlayerView: View {
                     Text("Elapsed \(formattedTime(playback.offset)) of \(formattedTime(playback.media.duration))")
                         .font(.caption2)
                         .foregroundStyle(.secondary)
+                    if let streamKind = activeStreamKind {
+                        Text(streamKind == .direct ? "Direct Play" : "Transcode")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                    }
                 }
                 .padding()
                 .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
@@ -80,14 +86,18 @@ struct ChannelPlayerView: View {
 
     @MainActor
     private func load(media: Channel.Media, offset: TimeInterval, preferTranscode: Bool) async {
-        guard let streamURL = plexService.streamURL(for: media, offset: offset, preferTranscode: preferTranscode) else {
+        guard let descriptor = plexService.streamDescriptor(for: media, offset: offset, preferTranscode: preferTranscode) else {
             playbackError = "Unable to construct a Plex stream URL."
             print("[ChannelPlayer] Failed to build stream URL for \(media.title)")
+            activeStreamKind = nil
             return
         }
 
-        print("[ChannelPlayer] Loading \(media.title) via \(preferTranscode ? "transcode" : "direct") stream")
-        let playerItem = AVPlayerItem(url: streamURL)
+        activeStreamKind = descriptor.kind
+        let streamLabel = descriptor.kind == .direct ? "direct" : "transcode"
+        print("[ChannelPlayer] Loading \(media.title) via \(streamLabel) stream (offset \(Int(offset))s)")
+
+        let playerItem = AVPlayerItem(url: descriptor.url)
         currentPlayback = (media, offset)
         playbackError = nil
         pendingSeekOffset = offset
@@ -95,6 +105,7 @@ struct ChannelPlayerView: View {
         if player == nil {
             player = AVPlayer(playerItem: playerItem)
             player?.actionAtItemEnd = .pause
+            player?.automaticallyWaitsToMinimizeStalling = true
         } else {
             player?.replaceCurrentItem(with: playerItem)
         }
@@ -124,12 +135,17 @@ struct ChannelPlayerView: View {
             DispatchQueue.main.async {
                 switch item.status {
                 case .readyToPlay:
+                    print("[ChannelPlayer] Player item ready (stream: \(activeStreamKind?.rawValue ?? "unknown"))")
                     self.attemptSeekIfReady(for: item, offset: offset)
                 case .failed:
+                    let errorDescription = item.error?.localizedDescription ?? "unknown error"
                     if !preferTranscode {
+                        print("[ChannelPlayer] Direct stream failed for \(media.title); retrying with transcode. Error: \(errorDescription)")
                         Task { await load(media: media, offset: offset, preferTranscode: true) }
                     } else {
-                        playbackError = item.error?.localizedDescription ?? "Playback failed."
+                        playbackError = errorDescription
+                        activeStreamKind = nil
+                        print("[ChannelPlayer] Transcoded stream failed for \(media.title): \(errorDescription)")
                     }
                 default:
                     break
@@ -155,9 +171,11 @@ struct ChannelPlayerView: View {
     private func seekCurrentPlayer(to offset: TimeInterval) {
         let clampedOffset = max(0, offset)
         let targetTime = CMTime(seconds: clampedOffset, preferredTimescale: 600)
+        print("[ChannelPlayer] Seeking to \(clampedOffset)s")
         player?.seek(to: targetTime, toleranceBefore: .zero, toleranceAfter: .zero) { finished in
             guard finished else { return }
             self.player?.play()
+            print("[ChannelPlayer] Playback started at offset \(clampedOffset)s")
         }
     }
 
@@ -190,6 +208,7 @@ struct ChannelPlayerView: View {
 
         player?.pause()
         player = nil
+        activeStreamKind = nil
     }
 
     private func formattedTime(_ interval: TimeInterval) -> String {

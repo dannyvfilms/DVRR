@@ -15,6 +15,7 @@ struct QuickPlayView: View {
 
     @State private var player: AVPlayer?
     @State private var playbackError: String?
+    @State private var streamKind: PlexService.StreamKind?
 
     var body: some View {
         ZStack(alignment: .bottomLeading) {
@@ -44,6 +45,11 @@ struct QuickPlayView: View {
                 Text("Quick Play Preview")
                     .font(.caption)
                     .foregroundStyle(.secondary)
+                if let streamKind {
+                    Text(streamKind == .direct ? "Direct Play" : "Transcode")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
             }
             .padding()
             .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
@@ -66,30 +72,31 @@ struct QuickPlayView: View {
         }
     }
 
+    @MainActor
     private func startPlayback() async {
         if let provided = item.streamURL {
-            await MainActor.run {
-                startPlayer(with: provided)
-            }
+            let descriptor = PlexService.StreamDescriptor(url: provided, kind: item.streamKind ?? .direct, offset: 0)
+            startPlayer(with: descriptor)
             return
         }
 
         do {
-            let url = try await plexService.quickPlayURL(for: item.media)
-            await MainActor.run {
-                startPlayer(with: url)
+            if let descriptor = plexService.streamDescriptor(for: item.media) ??
+                plexService.streamDescriptor(for: item.media, preferTranscode: true) {
+                startPlayer(with: descriptor)
+            } else {
+                playbackError = PlexService.PlaybackError.noStreamURL.errorDescription ?? "Unable to start playback."
             }
         } catch {
-            await MainActor.run {
-                playbackError = error.localizedDescription
-            }
+            playbackError = error.localizedDescription
         }
     }
 
     @MainActor
-    private func startPlayer(with url: URL) {
-        print("[QuickPlay] Streaming \(item.title) via \(url.absoluteString)")
-        let playerItem = AVPlayerItem(url: url)
+    private func startPlayer(with descriptor: PlexService.StreamDescriptor) {
+        streamKind = descriptor.kind
+        print("[QuickPlay] Streaming \(item.title) via \(descriptor.kind.rawValue) stream")
+        let playerItem = AVPlayerItem(url: descriptor.url)
         let player = AVPlayer(playerItem: playerItem)
         self.player = player
         player.play()

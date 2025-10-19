@@ -46,12 +46,22 @@ private struct FocusStateWrapper<Content: View>: View {
     @FocusState private var isFocused: Bool
 
     var body: some View {
-        content
-            .focusable(true)
-            .focused($isFocused)
-            .onChange(of: isFocused) { newValue in
-                onChange(newValue)
-            }
+        if #available(tvOS 17.0, *) {
+            content
+                .focusable(true)
+                .focused($isFocused)
+                .onChange(of: isFocused) { oldValue, newValue in
+                    guard oldValue != newValue else { return }
+                    onChange(newValue)
+                }
+        } else {
+            content
+                .focusable(true)
+                .focused($isFocused)
+                .onChange(of: isFocused) { newValue in
+                    onChange(newValue)
+                }
+        }
     }
 }
 #endif
