@@ -95,7 +95,7 @@ final class ChannelBuilderViewModel: ObservableObject {
         draft.selectedLibraries.append(ref)
         draft.ensureSpecs()
         
-        AppLoggers.channel.info("event=builder.toggleLibrary.add libraryID=\(library.uuid, privacy: .public) totalSelected=\(draft.selectedLibraries.count)")
+        AppLoggers.channel.info("event=builder.toggleLibrary.add libraryID=\(library.uuid, privacy: .public) totalSelected=\(self.draft.selectedLibraries.count)")
 
         if draft.selectedLibraries.count == 1 {
             draft.sort = sortCatalog.defaultDescriptor(for: library)
@@ -105,7 +105,7 @@ final class ChannelBuilderViewModel: ObservableObject {
     }
 
     func proceedFromLibraries() {
-        AppLoggers.channel.info("event=builder.proceedFromLibraries selectedCount=\(draft.selectedLibraries.count)")
+        AppLoggers.channel.info("event=builder.proceedFromLibraries selectedCount=\(self.draft.selectedLibraries.count)")
         draft.ensureSpecs()
         guard !draft.selectedLibraries.isEmpty else {
             AppLoggers.channel.warning("event=builder.proceedFromLibraries.blocked reason=noLibrariesSelected")

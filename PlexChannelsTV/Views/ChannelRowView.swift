@@ -374,7 +374,7 @@ private extension ChannelRowView {
             if prefetchedURLs.contains(url) { continue }
 
             Task {
-                await MainActor.run {
+                _ = await MainActor.run {
                     prefetchedURLs.insert(url)
                 }
 
@@ -385,7 +385,7 @@ private extension ChannelRowView {
                         PlexImageCache.shared.insert(image, for: url)
                     }
                 } catch {
-                    await MainActor.run {
+                    _ = await MainActor.run {
                         prefetchedURLs.remove(url)
                     }
                 }
