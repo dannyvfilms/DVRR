@@ -51,12 +51,12 @@ final class ImageLoader: ObservableObject {
 
         if let cached = PlexImageCache.shared.image(for: url) {
             phase = .success(Image(uiImage: cached))
-            AppLoggers.net.debug("event=image.load status=cached")
+            AppLoggers.net.info("event=image.load status=cached url=\(url.redactedForLogging(), privacy: .public)")
             return
         }
 
         phase = .empty
-        AppLoggers.net.debug("event=image.load status=starting url=\(url.redactedForLogging(), privacy: .public)")
+        AppLoggers.net.info("event=image.load status=starting url=\(url.redactedForLogging(), privacy: .public)")
 
         task = Task { [weak self] in
             guard let self else { return }
@@ -65,18 +65,19 @@ final class ImageLoader: ObservableObject {
                 guard !Task.isCancelled else { return }
 
                 if let httpResponse = response as? HTTPURLResponse {
+                    AppLoggers.net.info("event=image.load status=\(httpResponse.statusCode) bytes=\(data.count) url=\(url.redactedForLogging(), privacy: .public)")
+                    
                     if httpResponse.statusCode != 200 {
                         AppLoggers.net.error("event=image.load.failed status=\(httpResponse.statusCode) url=\(url.redactedForLogging(), privacy: .public)")
                         self.phase = .failure
                         return
                     }
-                    AppLoggers.net.debug("event=image.load status=\(httpResponse.statusCode) bytes=\(data.count)")
                 }
 
                 if let uiImage = UIImage(data: data, scale: scale) {
                     PlexImageCache.shared.insert(uiImage, for: url)
                     self.phase = .success(Image(uiImage: uiImage))
-                    AppLoggers.net.debug("event=image.load status=success")
+                    AppLoggers.net.info("event=image.load status=success url=\(url.redactedForLogging(), privacy: .public)")
                 } else {
                     AppLoggers.net.error("event=image.load.failed reason=invalidImageData bytes=\(data.count) url=\(url.redactedForLogging(), privacy: .public)")
                     self.phase = .failure

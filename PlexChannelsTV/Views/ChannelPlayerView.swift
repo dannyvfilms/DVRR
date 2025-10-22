@@ -27,7 +27,6 @@ struct ChannelPlayerView: View {
     @State private var playbackError: String?
     @State private var isLoading = false
     @State private var hasAttemptedFallback = false
-    @State private var retryCount = 0
     @State private var pendingSeek: TimeInterval?
     @State private var ticker: Timer?
     @State private var currentTime: CMTime = .zero
@@ -161,7 +160,6 @@ private extension ChannelPlayerView {
 
         if resetFallback {
             hasAttemptedFallback = plan.mode != .direct
-            retryCount = 0  // Reset retry counter on new playback
         }
 
         let refreshedChannel = latestChannel(with: entry.channel.id) ?? entry.channel
@@ -354,40 +352,9 @@ private extension ChannelPlayerView {
 
     @MainActor
     func handlePlaybackFailure(for entry: PlaybackEntry, plan: PlexService.StreamPlan, error: Error?) {
-        let nsError = (error as NSError?) ?? NSError(domain: "Playback", code: -1)
-        
-        // Check for transient network errors that should be retried
-        let isTransientError = nsError.domain == NSURLErrorDomain && [
-            -1008,  // NSURLErrorResourceUnavailable
-            -1009,  // NSURLErrorNotConnectedToInternet
-            -1005,  // NSURLErrorNetworkConnectionLost
-            -1001   // NSURLErrorTimedOut
-        ].contains(nsError.code)
-        
-        // Only retry on INITIAL playback failures, not during stall recovery
-        // Retrying during recovery creates too many sessions and overwhelms Plex transcoder
-        if isTransientError && retryCount < 2 && !isRecovering {
-            retryCount += 1
-            AppLoggers.playback.info(
-                "event=play.retry itemID=\(entry.media.id, privacy: .public) attempt=\(retryCount) reason=transient_network_error errorCode=\(nsError.code)"
-            )
-            // Wait 1 second before retrying
-            Task { @MainActor in
-                try? await Task.sleep(nanoseconds: 1_000_000_000)
-                var options = plan.request
-                options.forceNewSession = true  // Force fresh session on retry
-                startPlayback(for: entry, options: options, fallbackFrom: plan, fallbackReason: "network_retry_\(retryCount)")
-            }
-            return
-        }
-        
-        // Try direct -> HLS fallback if direct play failed
         if plan.mode == .direct && !hasAttemptedFallback {
             hasAttemptedFallback = true
-            let reason = nsError.localizedDescription
-            AppLoggers.playback.info(
-                "event=play.fallback itemID=\(entry.media.id, privacy: .public) from=direct to=hls reason=\(reason, privacy: .public)"
-            )
+            let reason = (error as NSError?)?.localizedDescription ?? "direct_failed"
             var options = PlexService.StreamRequestOptions()
             options.preferDirect = false
             options.preferredMaxBitrate = max(adaptiveState.bitrateCap, 8_000)
@@ -397,11 +364,11 @@ private extension ChannelPlayerView {
             return
         }
 
-        // All retries exhausted, show error
         stopTicker()
+        let nsError = (error as NSError?) ?? NSError(domain: "Playback", code: -1)
         playbackError = nsError.localizedDescription
         AppLoggers.playback.error(
-            "event=play.status status=failed itemID=\(entry.media.id, privacy: .public) errorDomain=\(nsError.domain, privacy: .public) errorCode=\(nsError.code) retries=\(retryCount)"
+            "event=play.status status=failed itemID=\(entry.media.id, privacy: .public) errorDomain=\(nsError.domain, privacy: .public) errorCode=\(nsError.code)"
         )
     }
 
@@ -423,7 +390,6 @@ private extension ChannelPlayerView {
             "event=play.autoNext channelID=\(nextEntry.channel.id.uuidString, privacy: .public) nextItemID=\(nextEntry.media.id, privacy: .public)"
         )
         hasAttemptedFallback = false
-        retryCount = 0  // Reset retry counter for next item
         startPlayback(for: nextEntry)
     }
 }

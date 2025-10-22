@@ -417,17 +417,16 @@ final class PlexService: ObservableObject {
             return nil
         }
         
-        // Reduced to debug level since artwork loading is working reliably now
-        AppLoggers.net.debug("event=artwork.background itemID=\(media.id, privacy: .public) path=\(path, privacy: .public) width=\(width) height=\(height) blur=\(blur)")
+        AppLoggers.net.info("event=artwork.background itemID=\(media.id, privacy: .public) path=\(path, privacy: .public) width=\(width) height=\(height) blur=\(blur)")
         
         if let url = buildTranscodedArtworkURL(path: path, width: width, height: height, blur: blur, session: session) {
-            AppLoggers.net.debug("event=artwork.background.success itemID=\(media.id, privacy: .public) mode=transcoded")
+            AppLoggers.net.info("event=artwork.background.success itemID=\(media.id, privacy: .public) mode=transcoded url=\(url.redactedForLogging(), privacy: .public)")
             return url
         }
         
         let directURL = buildImageURL(from: path, width: width, height: height)
         if let directURL {
-            AppLoggers.net.debug("event=artwork.background.success itemID=\(media.id, privacy: .public) mode=direct")
+            AppLoggers.net.info("event=artwork.background.success itemID=\(media.id, privacy: .public) mode=direct url=\(directURL.redactedForLogging(), privacy: .public)")
         } else {
             AppLoggers.net.error("event=artwork.background.failed itemID=\(media.id, privacy: .public) path=\(path, privacy: .public)")
         }
@@ -444,16 +443,16 @@ final class PlexService: ObservableObject {
             return nil
         }
         
-        AppLoggers.net.debug("event=artwork.poster itemID=\(media.id, privacy: .public) path=\(path, privacy: .public) width=\(width) height=\(height)")
+        AppLoggers.net.info("event=artwork.poster itemID=\(media.id, privacy: .public) path=\(path, privacy: .public) width=\(width) height=\(height)")
         
         if let url = buildTranscodedArtworkURL(path: path, width: width, height: height, blur: nil, session: session) {
-            AppLoggers.net.debug("event=artwork.poster.success itemID=\(media.id, privacy: .public) mode=transcoded")
+            AppLoggers.net.info("event=artwork.poster.success itemID=\(media.id, privacy: .public) mode=transcoded url=\(url.redactedForLogging(), privacy: .public)")
             return url
         }
         
         let directURL = buildImageURL(from: path, width: width, height: height)
         if let directURL {
-            AppLoggers.net.debug("event=artwork.poster.success itemID=\(media.id, privacy: .public) mode=direct")
+            AppLoggers.net.info("event=artwork.poster.success itemID=\(media.id, privacy: .public) mode=direct url=\(directURL.redactedForLogging(), privacy: .public)")
         } else {
             AppLoggers.net.error("event=artwork.poster.failed itemID=\(media.id, privacy: .public) path=\(path, privacy: .public)")
         }
@@ -466,20 +465,20 @@ final class PlexService: ObservableObject {
             return nil
         }
         guard let path = media.logoArtworkCandidates.first else {
-            AppLoggers.net.debug("event=artwork.logo itemID=\(media.id, privacy: .public) status=noCandidates (normal for items without logos)")
+            AppLoggers.net.info("event=artwork.logo itemID=\(media.id, privacy: .public) status=noCandidates (normal for items without logos)")
             return nil
         }
         
-        AppLoggers.net.debug("event=artwork.logo itemID=\(media.id, privacy: .public) path=\(path, privacy: .public) width=\(width) height=\(height)")
+        AppLoggers.net.info("event=artwork.logo itemID=\(media.id, privacy: .public) path=\(path, privacy: .public) width=\(width) height=\(height)")
         
         if let url = buildTranscodedArtworkURL(path: path, width: width, height: height, blur: nil, session: session) {
-            AppLoggers.net.debug("event=artwork.logo.success itemID=\(media.id, privacy: .public) mode=transcoded")
+            AppLoggers.net.info("event=artwork.logo.success itemID=\(media.id, privacy: .public) mode=transcoded url=\(url.redactedForLogging(), privacy: .public)")
             return url
         }
         
         let directURL = buildImageURL(from: path, width: width, height: height)
         if let directURL {
-            AppLoggers.net.debug("event=artwork.logo.success itemID=\(media.id, privacy: .public) mode=direct")
+            AppLoggers.net.info("event=artwork.logo.success itemID=\(media.id, privacy: .public) mode=direct url=\(directURL.redactedForLogging(), privacy: .public)")
         } else {
             AppLoggers.net.error("event=artwork.logo.failed itemID=\(media.id, privacy: .public) path=\(path, privacy: .public)")
         }
