@@ -507,7 +507,7 @@ VStack {
 
 **Follow-up (Task 30)**: Initial improvements reduced stall frequency, but revealed Plex was still serving old bitrate segments after recovery due to session reuse. Added `forceNewSession` option to generate unique session IDs (with timestamp) on recovery, forcing Plex to start fresh transcoder with new bitrate immediately.
 
-**Follow-up (Task 31)**: Added automatic retry for transient network errors (NSURLError -1008, -1009, -1005, -1001). Retries up to 2 times with 1-second delay and forces new session on each attempt. Prevents one-off failures from showing error overlay.
+**Follow-up (Task 31)**: Added automatic retry for transient network errors (NSURLError -1008, -1009, -1005, -1001). Retries up to 2 times with 1-second delay and forces new session on each attempt. Prevents one-off failures from showing error overlay. **Important**: Only retries on initial playback startup - does NOT retry during stall recovery to avoid creating too many sessions and overwhelming Plex transcoder.
 
 ---
 

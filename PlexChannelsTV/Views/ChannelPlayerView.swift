@@ -364,8 +364,9 @@ private extension ChannelPlayerView {
             -1001   // NSURLErrorTimedOut
         ].contains(nsError.code)
         
-        // Retry transient errors up to 2 times
-        if isTransientError && retryCount < 2 {
+        // Only retry on INITIAL playback failures, not during stall recovery
+        // Retrying during recovery creates too many sessions and overwhelms Plex transcoder
+        if isTransientError && retryCount < 2 && !isRecovering {
             retryCount += 1
             AppLoggers.playback.info(
                 "event=play.retry itemID=\(entry.media.id, privacy: .public) attempt=\(retryCount) reason=transient_network_error errorCode=\(nsError.code)"
