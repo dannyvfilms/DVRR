@@ -21,6 +21,7 @@ struct PlexSessionInfo: Equatable {
 final class AuthState: ObservableObject {
     @Published var session: PlexSessionInfo?
     @Published var linkingError: String?
+    @Published private(set) var isLinked = false
 
     private let plexService: PlexService
     private let linkService: PlexLinkService
@@ -60,7 +61,10 @@ final class AuthState: ObservableObject {
     }
 
     func pollPin(id: Int, until deadline: Date) async throws -> String {
-        try await linkService.pollPin(id: id, until: deadline)
+        if isLinked {
+            throw LinkError.alreadyLinked
+        }
+        return try await linkService.pollPin(id: id, until: deadline)
     }
 
     func completeLink(authToken: String) async throws {
@@ -87,7 +91,6 @@ final class AuthState: ObservableObject {
         )
         try keychain.store(token: authToken, account: keychainAccount)
         let activeURL = plexService.session?.server.baseURL ?? primaryURL
-        print("[AuthState] Linked to server \(chosen.device.name) at \(activeURL.absoluteString)")
 
         if let seeder = channelSeeder, let libraries = plexService.session?.libraries {
             Task {
@@ -96,7 +99,6 @@ final class AuthState: ObservableObject {
         }
 
         let libraries = plexService.session?.libraries ?? []
-        print("[AuthState] Library count: \(libraries.count)")
         let info = PlexSessionInfo(
             authToken: authToken,
             serverURI: activeURL,
@@ -106,6 +108,8 @@ final class AuthState: ObservableObject {
             accountName: account?.title ?? account?.username ?? session?.accountName ?? "Plex User"
         )
         self.session = info
+        isLinked = true
+        linkService.setLinked(true)
     }
 
     func adoptCurrentSession() async {
@@ -120,12 +124,16 @@ final class AuthState: ObservableObject {
         )
         self.session = info
         try? keychain.store(token: session.accountToken, account: keychainAccount)
+        isLinked = true
+        linkService.setLinked(true)
     }
 
     func signOut() {
         plexService.signOut()
         keychain.deleteToken(account: keychainAccount)
         session = nil
+        isLinked = false
+        linkService.setLinked(false)
     }
 
     private func bootstrapFromKeychain() async {
@@ -157,7 +165,6 @@ final class AuthState: ObservableObject {
                 serverAccessToken: serverToken
             )
             let libraries = plexService.session?.libraries ?? []
-            print("[AuthState] Library count: \(libraries.count)")
             let activeURL = plexService.session?.server.baseURL ?? primaryURL
             let info = PlexSessionInfo(
                 authToken: token,
@@ -168,6 +175,8 @@ final class AuthState: ObservableObject {
                 accountName: account?.title ?? account?.username ?? "Plex User"
             )
             self.session = info
+            isLinked = true
+            linkService.setLinked(true)
             if let seeder = channelSeeder {
                 Task {
                     await seeder.seedIfNeeded(libraries: libraries)
@@ -192,7 +201,8 @@ final class AuthState: ObservableObject {
             )
             self.session = info
             try? keychain.store(token: info.authToken, account: keychainAccount)
-            print("[AuthState] Session updated for \(session.server.baseURL.absoluteString) with \(session.libraries.count) libraries")
+            isLinked = true
+            linkService.setLinked(true)
             if let seeder = channelSeeder {
                 Task {
                     await seeder.seedIfNeeded(libraries: session.libraries)
@@ -201,6 +211,8 @@ final class AuthState: ObservableObject {
         } else {
             self.session = nil
             keychain.deleteToken(account: keychainAccount)
+            isLinked = false
+            linkService.setLinked(false)
         }
     }
 }

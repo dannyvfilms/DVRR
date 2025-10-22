@@ -14,6 +14,13 @@ final class ChannelSeeder {
     private let defaults: UserDefaults
     private let seedKey = "channelSeeder.didSeedDefaults"
 
+    private enum SeedChannel: String, CaseIterable {
+        case moviesMix = "seed.movies.mix"
+        case moviesAction = "seed.movies.action"
+        case tvMix = "seed.tv.mix"
+        case tvComedy = "seed.tv.comedy"
+    }
+
     init(
         plexService: PlexService,
         channelStore: ChannelStore,
@@ -25,9 +32,26 @@ final class ChannelSeeder {
     }
 
     func seedIfNeeded(libraries: [PlexLibrary]) async {
-        guard defaults.bool(forKey: seedKey) == false else { return }
-        let hasChannels = await MainActor.run { !channelStore.channels.isEmpty }
-        guard !hasChannels else { return }
+        let existingKeys = await MainActor.run {
+            Set(channelStore.channels.map(\.libraryKey))
+        }
+
+        let expectedKeys = Set(SeedChannel.allCases.map(\.rawValue))
+        let hasSeededBefore = defaults.bool(forKey: seedKey)
+
+        var pendingSeeds: Set<String>
+        if hasSeededBefore {
+            pendingSeeds = expectedKeys.subtracting(existingKeys)
+            if existingKeys.isEmpty {
+                pendingSeeds = expectedKeys
+            }
+        } else {
+            pendingSeeds = expectedKeys
+        }
+
+        guard !pendingSeeds.isEmpty else { return }
+
+        defaults.set(false, forKey: seedKey)
 
         print("[ChannelSeeder] Starting default channel seeding…")
 
@@ -38,13 +62,25 @@ final class ChannelSeeder {
             var seededAny = false
 
             if !movieLibraries.isEmpty {
-                if try await seedMoviesMix(from: movieLibraries) { seededAny = true }
-                if try await seedMoviesAction(from: movieLibraries) { seededAny = true }
+                if pendingSeeds.contains(SeedChannel.moviesMix.rawValue),
+                   try await seedMoviesMix(from: movieLibraries) {
+                    seededAny = true
+                }
+                if pendingSeeds.contains(SeedChannel.moviesAction.rawValue),
+                   try await seedMoviesAction(from: movieLibraries) {
+                    seededAny = true
+                }
             }
 
             if !showLibraries.isEmpty {
-                if try await seedTVMix(from: showLibraries) { seededAny = true }
-                if try await seedTVComedy(from: showLibraries) { seededAny = true }
+                if pendingSeeds.contains(SeedChannel.tvMix.rawValue),
+                   try await seedTVMix(from: showLibraries) {
+                    seededAny = true
+                }
+                if pendingSeeds.contains(SeedChannel.tvComedy.rawValue),
+                   try await seedTVComedy(from: showLibraries) {
+                    seededAny = true
+                }
             }
 
             if seededAny {

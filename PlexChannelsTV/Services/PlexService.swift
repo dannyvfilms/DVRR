@@ -13,13 +13,39 @@ final class PlexService: ObservableObject {
 
     enum StreamKind: String {
         case direct = "direct"
-        case universalTranscode = "universal-transcode"
+        case hls = "hls"
     }
 
     struct StreamDescriptor {
         let url: URL
         let kind: StreamKind
         let offset: TimeInterval
+    }
+
+    enum TokenType: String {
+        case server
+        case account
+    }
+
+    struct StreamRequestOptions {
+        var preferDirect: Bool = true
+        var preferredMaxBitrate: Int = 10_000
+        var forceTranscode: Bool = false
+        var forceRemux: Bool = false
+    }
+
+    struct StreamPlan {
+        let mode: StreamKind
+        let url: URL
+        let startAt: TimeInterval
+        let reason: String
+        let tokenType: TokenType
+        let baseURL: URL
+        let partID: Int?
+        let request: StreamRequestOptions
+        let directStream: Bool
+        let directPlay: Bool
+        let maxVideoBitrate: Int?
     }
 
     struct Session {
@@ -188,6 +214,7 @@ final class PlexService: ObservableObject {
             )
 
             session = newSession
+            logSessionInfo(newSession)
         } catch let error as ServiceError {
             lastError = error
             print("PlexService.authenticate error: \(error.localizedDescription)")
@@ -226,6 +253,9 @@ final class PlexService: ObservableObject {
                 server: activeSession.server,
                 libraries: response.mediaContainer.directory
             )
+            if let session {
+                logSessionInfo(session)
+            }
         } catch let error as ServiceError {
             lastError = error
             print("PlexService.refreshLibraries error: \(error.localizedDescription)")
@@ -341,6 +371,7 @@ final class PlexService: ObservableObject {
                 )
                 credentialStore.storeSession(stored)
                 self.session = newSession
+                logSessionInfo(newSession)
                 return
             } catch {
                 lastError = error
@@ -360,12 +391,7 @@ final class PlexService: ObservableObject {
 
     func buildImageURL(from path: String, width: Int? = nil, height: Int? = nil) -> URL? {
         guard let session else { return nil }
-        let baseURL: URL
-        if let resolved = URL(string: path, relativeTo: session.server.baseURL) {
-            baseURL = resolved
-        } else {
-            baseURL = session.server.baseURL.appendingPathComponent(path.trimmingCharacters(in: CharacterSet(charactersIn: "/")))
-        }
+        guard let baseURL = resolve(path: path, relativeTo: session.server.baseURL) else { return nil }
 
         guard var components = URLComponents(url: baseURL, resolvingAgainstBaseURL: true) else { return nil }
         var items = components.queryItems ?? []
@@ -380,13 +406,212 @@ final class PlexService: ObservableObject {
         return components.url
     }
 
+    func backgroundArtworkURL(for media: Channel.Media, width: Int = 1280, height: Int = 720, blur: Int = 32) -> URL? {
+        guard let session else {
+            AppLoggers.net.error("event=artwork.background itemID=\(media.id, privacy: .public) status=noSession")
+            return nil
+        }
+        guard let path = media.backgroundArtworkCandidates.first else {
+            AppLoggers.net.error("event=artwork.background itemID=\(media.id, privacy: .public) status=noCandidates candidates=\(media.backgroundArtworkCandidates, privacy: .public)")
+            return nil
+        }
+        
+        AppLoggers.net.info("event=artwork.background itemID=\(media.id, privacy: .public) path=\(path, privacy: .public) width=\(width) height=\(height) blur=\(blur)")
+        
+        if let url = buildTranscodedArtworkURL(path: path, width: width, height: height, blur: blur, session: session) {
+            AppLoggers.net.info("event=artwork.background.success itemID=\(media.id, privacy: .public) mode=transcoded url=\(url.redactedForLogging(), privacy: .public)")
+            return url
+        }
+        
+        let directURL = buildImageURL(from: path, width: width, height: height)
+        if let directURL {
+            AppLoggers.net.info("event=artwork.background.success itemID=\(media.id, privacy: .public) mode=direct url=\(directURL.redactedForLogging(), privacy: .public)")
+        } else {
+            AppLoggers.net.error("event=artwork.background.failed itemID=\(media.id, privacy: .public) path=\(path, privacy: .public)")
+        }
+        return directURL
+    }
+
+    func posterArtworkURL(for media: Channel.Media, width: Int = 300, height: Int = 450) -> URL? {
+        guard let session else {
+            AppLoggers.net.error("event=artwork.poster itemID=\(media.id, privacy: .public) status=noSession")
+            return nil
+        }
+        guard let path = media.posterArtworkCandidates.first else {
+            AppLoggers.net.error("event=artwork.poster itemID=\(media.id, privacy: .public) status=noCandidates candidates=\(media.posterArtworkCandidates, privacy: .public)")
+            return nil
+        }
+        
+        AppLoggers.net.info("event=artwork.poster itemID=\(media.id, privacy: .public) path=\(path, privacy: .public) width=\(width) height=\(height)")
+        
+        if let url = buildTranscodedArtworkURL(path: path, width: width, height: height, blur: nil, session: session) {
+            AppLoggers.net.info("event=artwork.poster.success itemID=\(media.id, privacy: .public) mode=transcoded url=\(url.redactedForLogging(), privacy: .public)")
+            return url
+        }
+        
+        let directURL = buildImageURL(from: path, width: width, height: height)
+        if let directURL {
+            AppLoggers.net.info("event=artwork.poster.success itemID=\(media.id, privacy: .public) mode=direct url=\(directURL.redactedForLogging(), privacy: .public)")
+        } else {
+            AppLoggers.net.error("event=artwork.poster.failed itemID=\(media.id, privacy: .public) path=\(path, privacy: .public)")
+        }
+        return directURL
+    }
+
+    func logoArtworkURL(for media: Channel.Media, width: Int = 320, height: Int = 180) -> URL? {
+        guard let session else {
+            AppLoggers.net.error("event=artwork.logo itemID=\(media.id, privacy: .public) status=noSession")
+            return nil
+        }
+        guard let path = media.logoArtworkCandidates.first else {
+            AppLoggers.net.info("event=artwork.logo itemID=\(media.id, privacy: .public) status=noCandidates (normal for items without logos)")
+            return nil
+        }
+        
+        AppLoggers.net.info("event=artwork.logo itemID=\(media.id, privacy: .public) path=\(path, privacy: .public) width=\(width) height=\(height)")
+        
+        if let url = buildTranscodedArtworkURL(path: path, width: width, height: height, blur: nil, session: session) {
+            AppLoggers.net.info("event=artwork.logo.success itemID=\(media.id, privacy: .public) mode=transcoded url=\(url.redactedForLogging(), privacy: .public)")
+            return url
+        }
+        
+        let directURL = buildImageURL(from: path, width: width, height: height)
+        if let directURL {
+            AppLoggers.net.info("event=artwork.logo.success itemID=\(media.id, privacy: .public) mode=direct url=\(directURL.redactedForLogging(), privacy: .public)")
+        } else {
+            AppLoggers.net.error("event=artwork.logo.failed itemID=\(media.id, privacy: .public) path=\(path, privacy: .public)")
+        }
+        return directURL
+    }
+
+    private func buildTranscodedArtworkURL(
+        path: String,
+        width: Int,
+        height: Int,
+        blur: Int?,
+        session: Session
+    ) -> URL? {
+        guard let target = resolve(path: path, relativeTo: session.server.baseURL) else { return nil }
+        
+        // For transcoded images, we need a properly formatted URL with the token in the target URL
+        guard var targetComponents = URLComponents(url: target, resolvingAgainstBaseURL: true) else { return nil }
+        var targetItems = targetComponents.queryItems ?? []
+        targetItems.append(URLQueryItem(name: "X-Plex-Token", value: session.server.accessToken))
+        targetComponents.queryItems = targetItems
+        
+        guard let targetURLWithToken = targetComponents.url else { return nil }
+        
+        guard let transcodeBase = URL(string: "photo/:/transcode", relativeTo: session.server.baseURL) else { return nil }
+        guard var components = URLComponents(url: transcodeBase, resolvingAgainstBaseURL: true) else { return nil }
+
+        var items: [URLQueryItem] = [
+            URLQueryItem(name: "X-Plex-Token", value: session.server.accessToken),
+            URLQueryItem(name: "width", value: "\(width)"),
+            URLQueryItem(name: "height", value: "\(height)"),
+            URLQueryItem(name: "minSize", value: "1"),
+            URLQueryItem(name: "upscale", value: "1"),
+            URLQueryItem(name: "url", value: targetURLWithToken.absoluteString)
+        ]
+
+        if let blur {
+            items.append(URLQueryItem(name: "blur", value: "\(blur)"))
+        }
+
+        components.queryItems = items
+        return components.url
+    }
+
+    private func resolve(path: String, relativeTo base: URL) -> URL? {
+        if let url = URL(string: path), url.scheme != nil {
+            return url
+        }
+
+        let trimmed = path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        return base.appendingPathComponent(trimmed)
+    }
+
+    func streamURLForItem(
+        itemID: String,
+        startAtSec: TimeInterval,
+        options: StreamRequestOptions = StreamRequestOptions()
+    ) async throws -> StreamPlan {
+        guard let currentSession = session else {
+            throw ServiceError.noActiveSession
+        }
+
+        let offset = max(0, startAtSec)
+        let urls = orderedUnique([currentSession.server.baseURL] + currentSession.server.fallbackURLs)
+        let tokens = orderedTokens(for: currentSession)
+        var lastError: Error?
+
+        for (index, baseURL) in urls.enumerated() {
+            if baseURL.scheme?.lowercased() != "https" {
+                AppLoggers.net.warning(
+                    "event=net.insecureURL url=\(baseURL.redactedForLogging(), privacy: .public)"
+                )
+            }
+
+            for tokenCandidate in tokens {
+                do {
+                    let metadata = try await fetchMetadata(
+                        for: itemID,
+                        baseURL: baseURL,
+                        token: tokenCandidate.token,
+                        tokenType: tokenCandidate.type
+                    )
+                    let plan = try buildStreamPlan(
+                        metadata: metadata,
+                        baseURL: baseURL,
+                        token: tokenCandidate.token,
+                        tokenType: tokenCandidate.type,
+                        offset: offset,
+                        options: options
+                    )
+
+                    if index != 0 {
+                        promoteActiveServer(to: baseURL, allURLs: urls, preservingLibraries: currentSession.libraries)
+                    }
+
+                    let remuxValue = plan.directStream ? 1 : 0
+                    let bitrateValue = plan.maxVideoBitrate ?? 0
+                    AppLoggers.playback.info(
+                        "event=play.plan mode=\(plan.mode.rawValue, privacy: .public) remux=\(remuxValue) bitrateKbps=\(bitrateValue) url=\(plan.url.redactedForLogging(), privacy: .public) offsetSec=\(Int(plan.startAt)) reason=\(plan.reason, privacy: .public)"
+                    )
+
+                    return plan
+                } catch StreamResolutionError.unauthorized(_) {
+                    AppLoggers.net.error(
+                        "event=net.requestUnauthorized url=\(baseURL.redactedForLogging(), privacy: .public) tokenType=\(tokenCandidate.type.rawValue, privacy: .public)"
+                    )
+                    AppLoggers.net.info(
+                        "event=net.retry reason=auth currentTokenType=\(tokenCandidate.type.rawValue, privacy: .public)"
+                    )
+                    lastError = PlaybackError.noStreamURL
+                    continue
+                } catch {
+                    lastError = error
+                    AppLoggers.net.error(
+                        "event=net.metadataFailure url=\(baseURL.redactedForLogging(), privacy: .public) error=\(String(describing: error), privacy: .public)"
+                    )
+                    continue
+                }
+            }
+        }
+
+        if let lastError {
+            throw lastError
+        }
+
+        throw PlaybackError.noStreamURL
+    }
+
     func streamDescriptor(
         for media: Channel.Media,
         offset: TimeInterval = 0,
         preferTranscode: Bool = false
     ) -> StreamDescriptor? {
         guard let currentSession = session else {
-            print("[PlexService] streamDescriptor unavailable – no active session")
+            AppLoggers.playback.error("event=play.legacyDescriptor status=error reason=\"no_active_session\"")
             return nil
         }
 
@@ -396,25 +621,40 @@ final class PlexService: ObservableObject {
                token: currentSession.server.accessToken,
                baseURL: currentSession.server.baseURL
            ) {
-            print("[PlexService] Prepared direct stream for media \(media.id)")
+            AppLoggers.playback.info(
+                "event=play.legacyDescriptor mode=direct itemID=\(media.id, privacy: .public)"
+            )
             return StreamDescriptor(url: directURL, kind: .direct, offset: offset)
         }
 
         if !preferTranscode {
-            print("[PlexService] No direct stream available for media \(media.id); falling back to transcode")
+            AppLoggers.playback.info(
+                "event=play.legacyDescriptor mode=hls reason=\"force_transcode\" itemID=\(media.id, privacy: .public)"
+            )
         }
 
         guard let transcode = transcodeURL(
-            for: media,
+            ratingKey: media.id,
             offset: offset,
             token: currentSession.server.accessToken,
-            baseURL: currentSession.server.baseURL
+            baseURL: currentSession.server.baseURL,
+            options: HLSRequestOptions(
+                directStream: false,
+                directPlay: false,
+                maxVideoBitrate: 10_000,
+                videoCodec: nil,
+                audioCodec: nil
+            )
         ) else {
-            print("[PlexService] Failed to construct transcode URL for media \(media.id)")
+            AppLoggers.playback.error(
+                "event=play.legacyDescriptor status=error reason=\"no_transcode_url\" itemID=\(media.id, privacy: .public)"
+            )
             return nil
         }
-        print("[PlexService] Prepared transcode stream for media \(media.id)")
-        return StreamDescriptor(url: transcode, kind: .universalTranscode, offset: offset)
+        AppLoggers.playback.info(
+            "event=play.legacyDescriptor mode=hls itemID=\(media.id, privacy: .public)"
+        )
+        return StreamDescriptor(url: transcode, kind: .hls, offset: offset)
     }
 
     func streamURL(
@@ -479,6 +719,9 @@ final class PlexService: ObservableObject {
                     server: server,
                     libraries: response.mediaContainer.directory
                 )
+                if let session {
+                    logSessionInfo(session)
+                }
 
                 credentialStore.storeSession(
                     PlexCredentialStore.StoredSession(
@@ -667,6 +910,14 @@ final class PlexService: ObservableObject {
         )
     }
 
+    private func logSessionInfo(_ session: Session) {
+        let serverURI = session.server.baseURL.redactedForLogging()
+        let fallbackCount = session.server.fallbackURLs.count
+        AppLoggers.app.info(
+            "event=session serverURI=\(serverURI, privacy: .public) tokenKind=server fallbackCount=\(fallbackCount)"
+        )
+    }
+
     private func perform<Request: PlexServiceRequest>(
         _ request: Request,
         token: String? = nil
@@ -709,15 +960,24 @@ final class PlexService: ObservableObject {
     }
 
     private func streamSessionIdentifier(for media: Channel.Media) -> String {
-        "channels-\(clientIdentifierValue)-\(media.id)"
+        streamSessionIdentifier(forItemID: media.id)
+    }
+
+    private func streamSessionIdentifier(forItemID id: String) -> String {
+        "channels-\(clientIdentifierValue)-\(id)"
     }
 
     private func directPlayURL(for media: Channel.Media, token: String, baseURL: URL) -> URL? {
         guard let partKey = media.partKey else {
-            print("[PlexService] directPlayURL unavailable – media \(media.id) missing partKey")
+            AppLoggers.playback.error(
+                "event=play.planSkipping reason=\"missing_part_key\" itemID=\(media.id, privacy: .public)"
+            )
             return nil
         }
+        return directPlayURL(partKey: partKey, token: token, baseURL: baseURL)
+    }
 
+    private func directPlayURL(partKey: String, token: String, baseURL: URL) -> URL? {
         let url: URL
         if let resolved = URL(string: partKey, relativeTo: baseURL) {
             url = resolved
@@ -733,36 +993,367 @@ final class PlexService: ObservableObject {
     }
 
     private func transcodeURL(
-        for media: Channel.Media,
+        ratingKey: String,
         offset: TimeInterval,
         token: String,
-        baseURL: URL
+        baseURL: URL,
+        options: HLSRequestOptions
     ) -> URL? {
         let path = "/video/:/transcode/universal/start.m3u8"
         guard let url = URL(string: path, relativeTo: baseURL) else { return nil }
         guard var components = URLComponents(url: url, resolvingAgainstBaseURL: true) else { return nil }
 
         var queryItems = standardQueryItems(token: token)
-        let sessionID = streamSessionIdentifier(for: media)
+        let sessionID = streamSessionIdentifier(forItemID: ratingKey)
         queryItems.append(contentsOf: [
-            .init(name: "path", value: "/library/metadata/\(media.id)"),
+            .init(name: "path", value: "/library/metadata/\(ratingKey)"),
             .init(name: "offset", value: String(Int(offset))),
             .init(name: "protocol", value: "hls"),
-            .init(name: "directPlay", value: "0"),
-            .init(name: "directStream", value: "1"),
+            .init(name: "directPlay", value: options.directPlay ? "1" : "0"),
+            .init(name: "directStream", value: options.directStream ? "1" : "0"),
             .init(name: "fastSeek", value: "1"),
             .init(name: "copyts", value: "1"),
             .init(name: "mediaIndex", value: "0"),
             .init(name: "partIndex", value: "0"),
             .init(name: "audioBoost", value: "100"),
-            .init(name: "maxVideoBitrate", value: "20000"),
+            .init(name: "maxVideoBitrate", value: String(options.maxVideoBitrate)),
             .init(name: "subtitleSize", value: "100"),
             .init(name: "session", value: sessionID),
             .init(name: "X-Plex-Session-Identifier", value: sessionID)
         ])
 
+        if let videoCodec = options.videoCodec {
+            queryItems.append(.init(name: "videoCodec", value: videoCodec))
+        }
+        if let audioCodec = options.audioCodec {
+            queryItems.append(.init(name: "audioCodec", value: audioCodec))
+        }
+
         components.queryItems = queryItems
         return components.url
+    }
+
+    private func orderedTokens(for session: Session) -> [(token: String, type: TokenType)] {
+        var ordered: [(String, TokenType)] = [(session.server.accessToken, .server)]
+        if session.accountToken != session.server.accessToken {
+            ordered.append((session.accountToken, .account))
+        }
+        return ordered
+    }
+
+    private func fetchMetadata(
+        for itemID: String,
+        baseURL: URL,
+        token: String,
+        tokenType: TokenType
+    ) async throws -> MetadataResponse.Metadata {
+        guard let url = metadataURL(for: itemID, baseURL: baseURL, token: token) else {
+            throw StreamResolutionError.invalidURL
+        }
+
+        var request = URLRequest(url: url)
+        request.httpMethod = "GET"
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        request.setValue("application/json", forHTTPHeaderField: "X-Plex-Accept")
+        request.setValue(productName, forHTTPHeaderField: "X-Plex-Product")
+        request.setValue(clientVersion, forHTTPHeaderField: "X-Plex-Version")
+        request.setValue(platformName, forHTTPHeaderField: "X-Plex-Platform")
+        request.setValue(deviceModel, forHTTPHeaderField: "X-Plex-Device")
+        request.setValue(deviceDisplayName, forHTTPHeaderField: "X-Plex-Device-Name")
+        request.setValue(clientIdentifierValue, forHTTPHeaderField: "X-Plex-Client-Identifier")
+
+        let start = Date()
+        let method = request.httpMethod ?? "GET"
+        let headers = summarizeHeaders(request.allHTTPHeaderFields)
+        AppLoggers.net.info(
+            "event=net.request method=\(method, privacy: .public) url=\(url.redactedForLogging(), privacy: .public) headers=\(headers, privacy: .public) startMs=\(Int(start.timeIntervalSince1970 * 1000))"
+        )
+
+        do {
+            let (data, response) = try await URLSession.shared.data(for: request)
+            let elapsed = Int(Date().timeIntervalSince(start) * 1000)
+            guard let httpResponse = response as? HTTPURLResponse else {
+                AppLoggers.net.error("event=net.responseMissing elapsedMs=\(elapsed)")
+                throw StreamResolutionError.http(status: -1)
+            }
+
+            AppLoggers.net.info(
+                "event=net.response status=\(httpResponse.statusCode) elapsedMs=\(elapsed) bodyBytes=\(data.count)"
+            )
+
+            if httpResponse.statusCode == 401 {
+                throw StreamResolutionError.unauthorized(tokenType)
+            }
+
+            guard (200...299).contains(httpResponse.statusCode) else {
+                throw StreamResolutionError.http(status: httpResponse.statusCode)
+            }
+
+            do {
+                let decoder = JSONDecoder()
+                let decoded = try decoder.decode(MetadataResponse.self, from: data)
+                guard let metadata = decoded.mediaContainer.metadata.first else {
+                    throw StreamResolutionError.missingMetadata
+                }
+                return metadata
+            } catch {
+                throw StreamResolutionError.decoding(error)
+            }
+        } catch let error as StreamResolutionError {
+            throw error
+        } catch {
+            AppLoggers.net.error(
+                "event=net.requestFailed url=\(url.redactedForLogging(), privacy: .public) error=\(String(describing: error), privacy: .public)"
+            )
+            throw error
+        }
+    }
+
+    private func metadataURL(for itemID: String, baseURL: URL, token: String) -> URL? {
+        let trimmed = "library/metadata/\(itemID)"
+        guard var components = URLComponents(url: baseURL.appendingPathComponent(trimmed), resolvingAgainstBaseURL: true) else {
+            return nil
+        }
+        components.queryItems = mergeStandardQueryItems(into: components.queryItems ?? [], token: token)
+        return components.url
+    }
+
+    private func buildStreamPlan(
+        metadata: MetadataResponse.Metadata,
+        baseURL: URL,
+        token: String,
+        tokenType: TokenType,
+        offset: TimeInterval,
+        options: StreamRequestOptions
+    ) throws -> StreamPlan {
+        let sanitizedOffset = max(0, offset)
+        guard let media = metadata.media.first else {
+            throw StreamResolutionError.missingMediaParts
+        }
+        guard let part = media.parts.first, let partKey = part.key else {
+            throw StreamResolutionError.missingMediaParts
+        }
+
+        let container = (part.container ?? media.container)?.lowercased() ?? ""
+        let isMKV = container == "mkv"
+        let decision = evaluateDirectSupport(for: media)
+        let directURL = directPlayURL(partKey: partKey, token: token, baseURL: baseURL)
+
+        let shouldAttemptDirect = options.preferDirect &&
+            !options.forceTranscode &&
+            !options.forceRemux &&
+            !isMKV
+
+        if shouldAttemptDirect, decision.supported, let directURL {
+            var appliedOptions = options
+            appliedOptions.forceRemux = false
+            return StreamPlan(
+                mode: .direct,
+                url: directURL,
+                startAt: sanitizedOffset,
+                reason: "direct:\(decision.reason)",
+                tokenType: tokenType,
+                baseURL: baseURL,
+                partID: part.id,
+                request: appliedOptions,
+                directStream: false,
+                directPlay: true,
+                maxVideoBitrate: nil
+            )
+        }
+
+        let remux = (options.forceRemux || isMKV) && !options.forceTranscode
+        let maxBitrate = max(1_000, options.preferredMaxBitrate)
+        let hlsOptions = HLSRequestOptions(
+            directStream: remux,
+            directPlay: false,
+            maxVideoBitrate: maxBitrate,
+            videoCodec: remux ? "copy" : "h264",
+            audioCodec: remux ? "copy" : "aac"
+        )
+
+        let hlsURL = try buildHLSURL(
+            ratingKey: metadata.ratingKey,
+            offset: sanitizedOffset,
+            token: token,
+            baseURL: baseURL,
+            options: hlsOptions
+        )
+
+        let fallbackReason: String
+        if options.forceTranscode {
+            fallbackReason = "forced_transcode"
+        } else if remux {
+            let detail = container.isEmpty ? "unknown" : container
+            fallbackReason = "force_remux:container=\(detail)"
+        } else if !options.preferDirect {
+            fallbackReason = "prefer_transcode"
+        } else if !decision.supported {
+            fallbackReason = "unsupported_codec:\(decision.reason)"
+        } else if directURL == nil {
+            fallbackReason = "missing_direct_url"
+        } else {
+            fallbackReason = "forced_hls"
+        }
+
+        var appliedOptions = options
+        appliedOptions.forceRemux = remux
+
+        return StreamPlan(
+            mode: .hls,
+            url: hlsURL,
+            startAt: sanitizedOffset,
+            reason: fallbackReason,
+            tokenType: tokenType,
+            baseURL: baseURL,
+            partID: part.id,
+            request: appliedOptions,
+            directStream: remux,
+            directPlay: false,
+            maxVideoBitrate: maxBitrate
+        )
+    }
+
+    private func buildHLSURL(
+        ratingKey: String,
+        offset: TimeInterval,
+        token: String,
+        baseURL: URL,
+        options: HLSRequestOptions
+    ) throws -> URL {
+        guard let url = transcodeURL(
+            ratingKey: ratingKey,
+            offset: offset,
+            token: token,
+            baseURL: baseURL,
+            options: options
+        ) else {
+            throw StreamResolutionError.missingMediaParts
+        }
+        return url
+    }
+
+    private func evaluateDirectSupport(for media: MetadataResponse.Media) -> DirectDecision {
+        let supportedVideo: Set<String> = ["h264", "hevc", "mpeg4"]
+        let supportedAudio: Set<String> = ["aac", "ac3", "eac3", "mp3", "dts"]
+
+        let videoCodec = media.videoCodec?.lowercased() ?? "unknown"
+        let audioValues = media.audioCodec?
+            .split(separator: ",")
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() }
+            .filter { !$0.isEmpty } ?? []
+
+        let videoOK = supportedVideo.contains(videoCodec)
+        let audioOK = audioValues.contains { supportedAudio.contains($0) }
+
+        if videoOK && audioOK {
+            let audioName = audioValues.first ?? "unknown"
+            return DirectDecision(supported: true, reason: "\(videoCodec)+\(audioName)")
+        }
+
+        if !videoOK {
+            return DirectDecision(supported: false, reason: "video=\(videoCodec)")
+        }
+
+        if audioValues.isEmpty {
+            return DirectDecision(supported: false, reason: "audio=unknown")
+        }
+
+        return DirectDecision(
+            supported: false,
+            reason: "audio=\(audioValues.joined(separator: "+"))"
+        )
+    }
+
+    private func summarizeHeaders(_ headers: [String: String]?) -> String {
+        guard let headers, !headers.isEmpty else { return "none" }
+        return headers.keys.sorted().joined(separator: ",")
+    }
+
+    private struct DirectDecision {
+        let supported: Bool
+        let reason: String
+    }
+
+    private struct HLSRequestOptions {
+        let directStream: Bool
+        let directPlay: Bool
+        let maxVideoBitrate: Int
+        let videoCodec: String?
+        let audioCodec: String?
+    }
+
+    private enum StreamResolutionError: Error {
+        case invalidURL
+        case unauthorized(TokenType)
+        case missingMetadata
+        case missingMediaParts
+        case decoding(Error)
+        case http(status: Int)
+    }
+
+    private struct MetadataResponse: Decodable {
+        let mediaContainer: MediaContainer
+
+        enum CodingKeys: String, CodingKey {
+            case mediaContainer = "MediaContainer"
+        }
+
+        struct MediaContainer: Decodable {
+            let metadata: [Metadata]
+
+            enum CodingKeys: String, CodingKey {
+                case metadata = "Metadata"
+            }
+        }
+
+        struct Metadata: Decodable {
+            let ratingKey: String
+            let title: String?
+            let duration: Int?
+            let media: [Media]
+
+            enum CodingKeys: String, CodingKey {
+                case ratingKey
+                case title
+                case duration
+                case media = "Media"
+            }
+        }
+
+        struct Media: Decodable {
+            let id: Int?
+            let videoCodec: String?
+            let audioCodec: String?
+            let container: String?
+            let parts: [Part]
+            let decision: String?
+
+            enum CodingKeys: String, CodingKey {
+                case id
+                case videoCodec
+                case audioCodec
+                case container
+                case parts = "Part"
+                case decision
+            }
+        }
+
+        struct Part: Decodable {
+            let id: Int?
+            let key: String?
+            let duration: Int?
+            let container: String?
+            let decision: String?
+
+            enum CodingKeys: String, CodingKey {
+                case id
+                case key
+                case duration
+                case container
+                case decision
+            }
+        }
     }
 }
 

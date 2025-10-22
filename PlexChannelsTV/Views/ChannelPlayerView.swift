@@ -2,224 +2,760 @@
 //  ChannelPlayerView.swift
 //  PlexChannelsTV
 //
-//  Created by Codex on 10/19/25.
+//  Created by Codex on 10/25/25.
 //
 
 import SwiftUI
 import AVKit
 
 struct ChannelPlayerView: View {
-    let channel: Channel
+    let request: ChannelPlaybackRequest
+    let onExit: () -> Void
 
     @EnvironmentObject private var plexService: PlexService
-
-    @State private var player: AVPlayer?
-    @State private var playbackObserver: Any?
+    @EnvironmentObject private var channelStore: ChannelStore
+    @State private var player = AVPlayer()
+    @State private var playbackContext: PlaybackContext?
+    @State private var playbackTask: Task<Void, Never>?
     @State private var statusObserver: NSKeyValueObservation?
-    @State private var currentPlayback: (media: Channel.Media, offset: TimeInterval)?
+    @State private var playToEndObserver: Any?
+    @State private var failToEndObserver: Any?
+    @State private var accessLogObserver: Any?
+    @State private var errorLogObserver: Any?
+    @State private var playbackStalledObserver: Any?
+    @State private var showDebugOverlay = false
     @State private var playbackError: String?
-    @State private var timer: Timer?
-    @State private var pendingSeekOffset: TimeInterval?
-    @State private var activeStreamKind: PlexService.StreamKind?
+    @State private var isLoading = false
+    @State private var hasAttemptedFallback = false
+    @State private var pendingSeek: TimeInterval?
+    @State private var ticker: Timer?
+    @State private var currentTime: CMTime = .zero
+    @State private var hasStartedPlayback = false
+    @State private var adaptiveState = AdaptiveState()
+    @State private var isRecovering = false
+    @State private var hasLoggedSegmentStart = false
 
     var body: some View {
         ZStack(alignment: .bottomLeading) {
             Color.black.ignoresSafeArea()
 
-            if let player = player {
-                VideoPlayer(player: player)
-                    .ignoresSafeArea()
-            } else if let playbackError {
-                VStack(spacing: 16) {
-                    Text("Playback Error")
-                        .font(.title2)
-                    Text(playbackError)
-                        .font(.body)
-                        .multilineTextAlignment(.center)
-                        .foregroundStyle(.secondary)
-                }
-                .padding()
-            } else {
-                ProgressView()
+            VideoPlayer(player: player)
+                .ignoresSafeArea()
+                .simultaneousGesture(
+                    LongPressGesture(minimumDuration: 1.0).onEnded { _ in
+                        withAnimation(.spring(duration: 0.25)) {
+                            showDebugOverlay.toggle()
+                        }
+                    }
+                )
+
+            if isLoading {
+                ProgressView("Preparing…")
                     .progressViewStyle(.circular)
+                    .tint(.white)
+                    .padding()
+            } else if let playbackError {
+                errorOverlay(message: playbackError)
             }
+        }
+        .overlay(alignment: .topTrailing) {
+            if showDebugOverlay, let context = playbackContext {
+                debugOverlay(for: context)
+                    .padding()
+                    .allowsHitTesting(false)
+                    .transition(.opacity)
+            }
+        }
+        .onAppear { startIfNeeded() }
+        .onDisappear { cleanup() }
+    }
+}
 
-            if let playback = currentPlayback {
-                VStack(alignment: .leading, spacing: 6) {
-                    Text(channel.name)
-                        .font(.title3)
-                        .bold()
-                    Text("Now Playing: \(playback.media.title)")
-                        .font(.footnote)
-                    Text("Elapsed \(formattedTime(playback.offset)) of \(formattedTime(playback.media.duration))")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                    if let streamKind = activeStreamKind {
-                        Text(streamKind == .direct ? "Direct Play" : "Transcode")
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
+// MARK: - Playback Lifecycle
+
+private extension ChannelPlayerView {
+    func startIfNeeded() {
+        guard !hasStartedPlayback else { return }
+        hasStartedPlayback = true
+        player.automaticallyWaitsToMinimizeStalling = true
+        player.allowsExternalPlayback = false
+        adaptiveState = AdaptiveState()
+
+        guard let entry = initialPlaybackEntry() else {
+            playbackError = "Unable to locate a playable item for this channel."
+            AppLoggers.playback.error(
+                "event=play.status status=failed reason=\"missing_entry\" channelID=\(request.channelID.uuidString, privacy: .public)"
+            )
+            return
+        }
+
+        AppLoggers.playback.info(
+            "event=play.status status=starting channelID=\(request.channelID.uuidString, privacy: .public) itemID=\(entry.media.id, privacy: .public) offsetSec=\(Int(entry.offset))"
+        )
+        startPlayback(for: entry)
+    }
+
+    func initialPlaybackEntry() -> PlaybackEntry? {
+        let channel = latestChannel(with: request.channelID) ?? request.channel
+
+        if let index = channel.items.firstIndex(where: { $0.id == request.item.id }) {
+            return PlaybackEntry(channel: channel, index: index, media: channel.items[index], offset: request.offset)
+        }
+
+        if channel.items.indices.contains(request.itemIndex) {
+            return PlaybackEntry(channel: channel, index: request.itemIndex, media: channel.items[request.itemIndex], offset: request.offset)
+        }
+
+        return nil
+    }
+
+    func startPlayback(
+        for entry: PlaybackEntry,
+        options: PlexService.StreamRequestOptions = PlexService.StreamRequestOptions(),
+        fallbackFrom previousPlan: PlexService.StreamPlan? = nil,
+        fallbackReason: String? = nil
+    ) {
+        playbackTask?.cancel()
+        AppLoggers.playback.info(
+            "event=play.start itemID=\(entry.media.id, privacy: .public) offsetSec=\(Int(entry.offset))"
+        )
+        playbackTask = Task { [weak plexService] in
+            guard let service = plexService else { return }
+
+            do {
+                await MainActor.run {
+                    isLoading = true
+                    if previousPlan == nil {
+                        playbackError = nil
+                    }
+                    if previousPlan != nil {
+                        isRecovering = true
                     }
                 }
-                .padding()
-                .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-                .padding()
-            }
-        }
-        .task {
-            await tuneToCurrentProgram()
-            startTimer()
-        }
-        .onDisappear {
-            cleanup()
-        }
-    }
 
-    @MainActor
-    private func tuneToCurrentProgram() async {
-        guard let position = channel.playbackPosition() else {
-            playbackError = "No playable media available for this channel."
-            return
-        }
+                let plan = try await service.streamURLForItem(
+                    itemID: entry.media.id,
+                    startAtSec: entry.offset,
+                    options: options
+                )
 
-        await load(media: position.media, offset: position.offset, preferTranscode: false)
-    }
-
-    @MainActor
-    private func load(media: Channel.Media, offset: TimeInterval, preferTranscode: Bool) async {
-        guard let descriptor = plexService.streamDescriptor(for: media, offset: offset, preferTranscode: preferTranscode) else {
-            playbackError = "Unable to construct a Plex stream URL."
-            print("[ChannelPlayer] Failed to build stream URL for \(media.title)")
-            activeStreamKind = nil
-            return
-        }
-
-        activeStreamKind = descriptor.kind
-        let streamLabel = descriptor.kind == .direct ? "direct" : "transcode"
-        print("[ChannelPlayer] Loading \(media.title) via \(streamLabel) stream (offset \(Int(offset))s)")
-
-        let playerItem = AVPlayerItem(url: descriptor.url)
-        currentPlayback = (media, offset)
-        playbackError = nil
-        pendingSeekOffset = offset
-
-        if player == nil {
-            player = AVPlayer(playerItem: playerItem)
-            player?.actionAtItemEnd = .pause
-            player?.automaticallyWaitsToMinimizeStalling = true
-        } else {
-            player?.replaceCurrentItem(with: playerItem)
-        }
-
-        observePlaybackEnd(for: playerItem)
-        observeStatus(for: playerItem, media: media, offset: offset, preferTranscode: preferTranscode)
-        attemptSeekIfReady(for: playerItem, offset: offset)
-    }
-
-    @MainActor
-    private func observePlaybackEnd(for item: AVPlayerItem) {
-        if let playbackObserver {
-            NotificationCenter.default.removeObserver(playbackObserver)
-        }
-
-        playbackObserver = NotificationCenter.default.addObserver(forName: .AVPlayerItemDidPlayToEndTime, object: item, queue: .main) { _ in
-            Task {
-                await tuneToCurrentProgram()
-            }
-        }
-    }
-
-    @MainActor
-    private func observeStatus(for item: AVPlayerItem, media: Channel.Media, offset: TimeInterval, preferTranscode: Bool) {
-        statusObserver?.invalidate()
-        statusObserver = item.observe(\.status, options: [.new, .initial]) { _, _ in
-            DispatchQueue.main.async {
-                switch item.status {
-                case .readyToPlay:
-                    print("[ChannelPlayer] Player item ready (stream: \(activeStreamKind?.rawValue ?? "unknown"))")
-                    self.attemptSeekIfReady(for: item, offset: offset)
-                case .failed:
-                    let errorDescription = item.error?.localizedDescription ?? "unknown error"
-                    if !preferTranscode {
-                        print("[ChannelPlayer] Direct stream failed for \(media.title); retrying with transcode. Error: \(errorDescription)")
-                        Task { await load(media: media, offset: offset, preferTranscode: true) }
-                    } else {
-                        playbackError = errorDescription
-                        activeStreamKind = nil
-                        print("[ChannelPlayer] Transcoded stream failed for \(media.title): \(errorDescription)")
+                await MainActor.run {
+                    if let originPlan = previousPlan {
+                        logFallback(from: originPlan, to: plan, reason: fallbackReason ?? "direct_failed")
                     }
-                default:
+                    applyPlan(plan, to: entry, resetFallback: previousPlan == nil)
+                }
+            } catch is CancellationError {
+                return
+            } catch {
+                await MainActor.run {
+                    handlePlaybackError(error, entry: entry)
+                }
+            }
+        }
+    }
+
+    func applyPlan(_ plan: PlexService.StreamPlan, to entry: PlaybackEntry, resetFallback: Bool) {
+        isLoading = false
+
+        if resetFallback {
+            hasAttemptedFallback = plan.mode != .direct
+        }
+
+        let refreshedChannel = latestChannel(with: entry.channel.id) ?? entry.channel
+        let refreshedEntry = PlaybackEntry(
+            channel: refreshedChannel,
+            index: entry.index,
+            media: entry.media,
+            offset: entry.offset
+        )
+
+        playbackContext = PlaybackContext(entry: refreshedEntry, plan: plan, startedAt: Date())
+        pendingSeek = (plan.mode == .direct && entry.offset > 0) ? entry.offset : nil
+        currentTime = .zero
+        adaptiveState.configure(for: plan, reset: resetFallback)
+        hasLoggedSegmentStart = false
+        isRecovering = false
+        replacePlayerItem(with: plan, entry: refreshedEntry)
+    }
+
+    func replacePlayerItem(with plan: PlexService.StreamPlan, entry: PlaybackEntry) {
+        clearPlayerObservers()
+
+        let item = AVPlayerItem(url: plan.url)
+        item.preferredForwardBufferDuration = 3
+        player.replaceCurrentItem(with: item)
+        configurePlayer(for: plan, entry: entry, item: item)
+        configureObservers(for: item, entry: entry, plan: plan)
+    }
+
+    func configurePlayer(for plan: PlexService.StreamPlan, entry: PlaybackEntry, item: AVPlayerItem) {
+        player.automaticallyWaitsToMinimizeStalling = true
+        player.allowsExternalPlayback = false
+        let peakBitrate = plan.maxVideoBitrate.map { Double($0) * 1_000 } ?? 0
+        item.preferredPeakBitRate = peakBitrate
+        let peakKbps = Int((peakBitrate / 1_000).rounded())
+        AppLoggers.playback.info(
+            "event=play.playerConfig itemID=\(entry.media.id, privacy: .public) remux=\(plan.directStream ? 1 : 0) forwardBufferSec=3 preferredPeakBitRateKbps=\(peakKbps) waitsToMinimizeStalling=1 externalPlayback=0"
+        )
+    }
+}
+
+// MARK: - Observers & Notifications
+
+private extension ChannelPlayerView {
+    func configureObservers(for item: AVPlayerItem, entry: PlaybackEntry, plan: PlexService.StreamPlan) {
+        statusObserver = item.observe(\.status, options: [.initial, .new]) { item, _ in
+            Task { @MainActor in
+                handleStatusChange(for: item, entry: entry, plan: plan)
+            }
+        }
+
+        playToEndObserver = NotificationCenter.default.addObserver(
+            forName: .AVPlayerItemDidPlayToEndTime,
+            object: item,
+            queue: .main
+        ) { _ in
+            Task { @MainActor in
+                handleItemEnded(entry: entry, plan: plan)
+            }
+        }
+
+        failToEndObserver = NotificationCenter.default.addObserver(
+            forName: .AVPlayerItemFailedToPlayToEndTime,
+            object: item,
+            queue: .main
+        ) { notification in
+            let error = notification.userInfo?[AVPlayerItemFailedToPlayToEndTimeErrorKey] as? NSError
+            Task { @MainActor in
+                handlePlaybackFailure(for: entry, plan: plan, error: error)
+            }
+        }
+
+        accessLogObserver = NotificationCenter.default.addObserver(
+            forName: .AVPlayerItemNewAccessLogEntry,
+            object: item,
+            queue: .main
+        ) { _ in
+            Task { @MainActor in
+                logAccessEvent(for: item, plan: plan, entry: entry)
+            }
+        }
+
+        errorLogObserver = NotificationCenter.default.addObserver(
+            forName: .AVPlayerItemNewErrorLogEntry,
+            object: item,
+            queue: .main
+        ) { _ in
+            Task { @MainActor in
+                logErrorEvent(for: item, plan: plan, entry: entry)
+            }
+        }
+
+        playbackStalledObserver = NotificationCenter.default.addObserver(
+            forName: .AVPlayerItemPlaybackStalled,
+            object: item,
+            queue: .main
+        ) { _ in
+            Task { @MainActor in
+                handlePlaybackStall(entry: entry, plan: plan)
+            }
+        }
+    }
+
+    func clearPlayerObservers() {
+        statusObserver?.invalidate()
+        statusObserver = nil
+
+        if let observer = playToEndObserver {
+            NotificationCenter.default.removeObserver(observer)
+            playToEndObserver = nil
+        }
+
+        if let observer = failToEndObserver {
+            NotificationCenter.default.removeObserver(observer)
+            failToEndObserver = nil
+        }
+
+        if let observer = accessLogObserver {
+            NotificationCenter.default.removeObserver(observer)
+            accessLogObserver = nil
+        }
+
+        if let observer = errorLogObserver {
+            NotificationCenter.default.removeObserver(observer)
+            errorLogObserver = nil
+        }
+
+        if let observer = playbackStalledObserver {
+            NotificationCenter.default.removeObserver(observer)
+            playbackStalledObserver = nil
+        }
+    }
+}
+
+// MARK: - Status Handling
+
+private extension ChannelPlayerView {
+    @MainActor
+    func handleStatusChange(for item: AVPlayerItem, entry: PlaybackEntry, plan: PlexService.StreamPlan) {
+        switch item.status {
+        case .readyToPlay:
+            AppLoggers.playback.info(
+                "event=play.status status=ready mode=\(plan.mode.rawValue, privacy: .public) itemID=\(entry.media.id, privacy: .public)"
+            )
+            startTicker()
+
+            if let pendingSeek {
+                performSeek(to: pendingSeek, item: item, entry: entry)
+            } else {
+                player.play()
+            }
+
+        case .failed:
+            let nsError = item.error as NSError?
+            let errorDomain = nsError?.domain ?? "unknown"
+            let errorCode = nsError?.code ?? -1
+            AppLoggers.playback.error(
+                "event=play.status status=failed mode=\(plan.mode.rawValue, privacy: .public) itemID=\(entry.media.id, privacy: .public) errorDomain=\(errorDomain, privacy: .public) errorCode=\(errorCode, privacy: .public)"
+            )
+            handlePlaybackFailure(for: entry, plan: plan, error: item.error)
+
+        case .unknown:
+            AppLoggers.playback.info(
+                "event=play.status status=unknown mode=\(plan.mode.rawValue, privacy: .public) itemID=\(entry.media.id, privacy: .public)"
+            )
+
+        @unknown default:
+            break
+        }
+    }
+
+    @MainActor
+    func performSeek(to seconds: TimeInterval, item: AVPlayerItem, entry: PlaybackEntry) {
+        pendingSeek = nil
+        let target = CMTime(seconds: max(0, seconds), preferredTimescale: 600)
+
+        AppLoggers.playback.info(
+            "event=play.seek requestedSec=\(Int(seconds)) itemID=\(entry.media.id, privacy: .public)"
+        )
+
+        player.seek(to: target, toleranceBefore: .zero, toleranceAfter: .zero) { finished in
+            let result = finished ? "ok" : "fail"
+            AppLoggers.playback.info(
+                "event=play.seek result=\(result, privacy: .public) requestedSec=\(Int(seconds)) itemID=\(entry.media.id, privacy: .public)"
+            )
+            self.player.play()
+        }
+    }
+
+    @MainActor
+    func handlePlaybackFailure(for entry: PlaybackEntry, plan: PlexService.StreamPlan, error: Error?) {
+        if plan.mode == .direct && !hasAttemptedFallback {
+            hasAttemptedFallback = true
+            let reason = (error as NSError?)?.localizedDescription ?? "direct_failed"
+            var options = PlexService.StreamRequestOptions()
+            options.preferDirect = false
+            options.preferredMaxBitrate = max(adaptiveState.bitrateCap, 10_000)
+            options.forceRemux = plan.directStream
+            options.forceTranscode = false
+            startPlayback(for: entry, options: options, fallbackFrom: plan, fallbackReason: reason)
+            return
+        }
+
+        stopTicker()
+        let nsError = (error as NSError?) ?? NSError(domain: "Playback", code: -1)
+        playbackError = nsError.localizedDescription
+        AppLoggers.playback.error(
+            "event=play.status status=failed itemID=\(entry.media.id, privacy: .public) errorDomain=\(nsError.domain, privacy: .public) errorCode=\(nsError.code)"
+        )
+    }
+
+    @MainActor
+    func handleItemEnded(entry: PlaybackEntry, plan: PlexService.StreamPlan) {
+        stopTicker()
+        guard let nextEntry = nextPlaybackEntry(after: entry) else {
+            playbackError = "No additional items available in this channel."
+            AppLoggers.playback.error(
+                "event=play.end endedItemID=\(entry.media.id, privacy: .public) nextItemID=none"
+            )
+            return
+        }
+
+        AppLoggers.playback.info(
+            "event=play.end endedItemID=\(entry.media.id, privacy: .public) nextItemID=\(nextEntry.media.id, privacy: .public)"
+        )
+        AppLoggers.playback.info(
+            "event=play.autoNext channelID=\(nextEntry.channel.id.uuidString, privacy: .public) nextItemID=\(nextEntry.media.id, privacy: .public)"
+        )
+        hasAttemptedFallback = false
+        startPlayback(for: nextEntry)
+    }
+}
+
+// MARK: - Logging Helpers
+
+private extension ChannelPlayerView {
+    func logFallback(from origin: PlexService.StreamPlan, to newPlan: PlexService.StreamPlan, reason: String) {
+        AppLoggers.playback.info(
+            "event=play.fallback from=\(origin.mode.rawValue, privacy: .public) to=\(newPlan.mode.rawValue, privacy: .public) directURL=\(origin.url.redactedForLogging(), privacy: .public) nextURL=\(newPlan.url.redactedForLogging(), privacy: .public) reason=\(reason, privacy: .public)"
+        )
+    }
+
+    @MainActor
+    func logAccessEvent(for item: AVPlayerItem, plan: PlexService.StreamPlan, entry: PlaybackEntry) {
+        guard let event = item.accessLog()?.events.last else { return }
+        let observed = Int(event.observedBitrate / 1000)
+        let indicated = Int(event.indicatedBitrate / 1000)
+        AppLoggers.playback.info(
+            "event=play.accessLog mode=\(plan.mode.rawValue, privacy: .public) itemID=\(entry.media.id, privacy: .public) observedKbps=\(observed) indicatedKbps=\(indicated)"
+        )
+        logFirstSegmentIfNeeded(from: event, plan: plan, entry: entry)
+        evaluateThroughput(observedKbps: observed, indicatedKbps: indicated, plan: plan, entry: entry)
+    }
+
+    @MainActor
+    func logErrorEvent(for item: AVPlayerItem, plan: PlexService.StreamPlan, entry: PlaybackEntry) {
+        guard let event = item.errorLog()?.events.last else { return }
+        let domainValue = (event.errorDomain as String?) ?? ""
+        let domain = domainValue.isEmpty ? "unknown" : domainValue
+        AppLoggers.playback.error(
+            "event=play.errorLog itemID=\(entry.media.id, privacy: .public) domain=\(domain, privacy: .public) status=\(event.errorStatusCode)"
+        )
+        if plan.mode == .hls, domain == "CoreMediaErrorDomain", event.errorStatusCode == -16830 {
+            attemptRecovery(for: plan, entry: entry, cause: .stall)
+        }
+    }
+
+    @MainActor
+    func handlePlaybackStall(entry: PlaybackEntry, plan: PlexService.StreamPlan) {
+        attemptRecovery(for: plan, entry: entry, cause: .stall)
+    }
+
+    @MainActor
+    func logFirstSegmentIfNeeded(from event: AVPlayerItemAccessLogEvent, plan: PlexService.StreamPlan, entry: PlaybackEntry) {
+        guard plan.mode == .hls, !hasLoggedSegmentStart else { return }
+        guard let uriString = event.uri, let url = URL(string: uriString) else { return }
+        let components = URLComponents(url: url, resolvingAgainstBaseURL: false)
+        let candidateNames = ["start", "startTime", "offset", "begin"]
+        var ptsValue: String?
+        if let items = components?.queryItems {
+            for name in candidateNames {
+                if let value = items.first(where: { $0.name == name })?.value {
+                    ptsValue = value
                     break
                 }
             }
         }
-    }
-
-    @MainActor
-    private func attemptSeekIfReady(for item: AVPlayerItem, offset: TimeInterval) {
-        guard player?.currentItem === item else { return }
-
-        if item.status == .readyToPlay {
-            let targetOffset = pendingSeekOffset ?? offset
-            pendingSeekOffset = nil
-            seekCurrentPlayer(to: targetOffset)
-        } else {
-            pendingSeekOffset = offset
-        }
-    }
-
-    @MainActor
-    private func seekCurrentPlayer(to offset: TimeInterval) {
-        let clampedOffset = max(0, offset)
-        let targetTime = CMTime(seconds: clampedOffset, preferredTimescale: 600)
-        print("[ChannelPlayer] Seeking to \(clampedOffset)s")
-        player?.seek(to: targetTime, toleranceBefore: .zero, toleranceAfter: .zero) { finished in
-            guard finished else { return }
-            self.player?.play()
-            print("[ChannelPlayer] Playback started at offset \(clampedOffset)s")
-        }
-    }
-
-    @MainActor
-    private func startTimer() {
-        stopTimer()
-        timer = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { _ in
-            Task { @MainActor in
-                currentPlayback = channel.playbackState()
+        if ptsValue == nil, let fragment = components?.fragment {
+            for name in candidateNames {
+                if let range = fragment.range(of: "\(name)=") {
+                    let remainder = fragment[range.upperBound...]
+                    if let end = remainder.firstIndex(of: "&") {
+                        ptsValue = String(remainder[..<end])
+                    } else {
+                        ptsValue = String(remainder)
+                    }
+                    break
+                }
             }
         }
+        guard let ptsValue else { return }
+        hasLoggedSegmentStart = true
+        AppLoggers.playback.info(
+            "event=play.segmentFirst itemID=\(entry.media.id, privacy: .public) pts=\(ptsValue, privacy: .public) uri=\(url.redactedForLogging(), privacy: .public)"
+        )
     }
 
     @MainActor
-    private func stopTimer() {
-        timer?.invalidate()
-        timer = nil
-    }
-
-    @MainActor
-    private func cleanup() {
-        stopTimer()
-
-        if let playbackObserver {
-            NotificationCenter.default.removeObserver(playbackObserver)
-            self.playbackObserver = nil
+    func evaluateThroughput(observedKbps: Int, indicatedKbps: Int, plan: PlexService.StreamPlan, entry: PlaybackEntry) {
+        guard plan.mode == .hls else { return }
+        guard indicatedKbps > 0 else {
+            adaptiveState.lowThroughputStart = nil
+            return
         }
-        statusObserver?.invalidate()
-        statusObserver = nil
 
-        player?.pause()
-        player = nil
-        activeStreamKind = nil
+        if Double(observedKbps) < Double(indicatedKbps) * 0.5 {
+            if adaptiveState.lowThroughputStart == nil {
+                adaptiveState.lowThroughputStart = Date()
+            } else if !adaptiveState.lowThroughputTriggered,
+                      let start = adaptiveState.lowThroughputStart,
+                      Date().timeIntervalSince(start) >= 10 {
+                adaptiveState.lowThroughputTriggered = true
+                attemptRecovery(for: plan, entry: entry, cause: .throughput(observed: observedKbps, indicated: indicatedKbps))
+            }
+        } else {
+            adaptiveState.lowThroughputStart = nil
+        }
     }
 
-    private func formattedTime(_ interval: TimeInterval) -> String {
-        guard interval.isFinite && interval > 0 else { return "00:00" }
-        let totalSeconds = Int(interval)
+    @MainActor
+    func attemptRecovery(for plan: PlexService.StreamPlan, entry: PlaybackEntry, cause: RecoveryCause) {
+        guard plan.mode == .hls else { return }
+        guard let context = playbackContext, context.plan.url == plan.url else { return }
+
+        let now = Date()
+        if let last = adaptiveState.lastRecovery, now.timeIntervalSince(last) < 5 {
+            return
+        }
+
+        if cause.requiresEarlyWindow {
+            let elapsed = now.timeIntervalSince(context.startedAt)
+            if elapsed > 45 { return }
+        }
+
+        let previousBitrate = adaptiveState.bitrateCap
+        var newOptions = plan.request
+        newOptions.preferDirect = false
+        let minimumCap = 3_000
+
+        var forceTranscodeTriggered = false
+        if adaptiveState.forceTranscode {
+            let reduced = max(Int(Double(previousBitrate) * 0.7), minimumCap)
+            if reduced >= previousBitrate {
+                AppLoggers.playback.error(
+                    "event=play.recover.exhausted itemID=\(entry.media.id, privacy: .public) cause=\(cause.label)"
+                )
+                return
+            }
+            adaptiveState.bitrateCap = reduced
+        } else if adaptiveState.downshiftCount >= 2 {
+            adaptiveState.forceTranscode = true
+            adaptiveState.bitrateCap = 7_000
+            forceTranscodeTriggered = true
+        } else {
+            let reduced = max(Int(Double(previousBitrate) * 0.7), minimumCap)
+            if reduced == previousBitrate {
+                return
+            }
+            adaptiveState.bitrateCap = reduced
+        }
+
+        adaptiveState.downshiftCount += 1
+        adaptiveState.lowThroughputStart = nil
+        adaptiveState.lastRecovery = now
+
+        newOptions.forceTranscode = adaptiveState.forceTranscode
+        newOptions.forceRemux = adaptiveState.forceTranscode ? false : plan.directStream
+        newOptions.preferredMaxBitrate = adaptiveState.bitrateCap
+
+        let logBitrate = adaptiveState.bitrateCap
+        switch cause {
+        case .stall:
+            if forceTranscodeTriggered {
+                AppLoggers.playback.info(
+                    "event=play.recover.forceTranscode itemID=\(entry.media.id, privacy: .public) cause=stall downshiftKbps=\(logBitrate)"
+                )
+            } else {
+                AppLoggers.playback.info(
+                    "event=play.recover itemID=\(entry.media.id, privacy: .public) cause=stall downshiftKbps=\(logBitrate)"
+                )
+            }
+        case .throughput(let observed, let indicated):
+            if forceTranscodeTriggered {
+                AppLoggers.playback.info(
+                    "event=play.recover.forceTranscode itemID=\(entry.media.id, privacy: .public) cause=throughput observedKbps=\(observed) indicatedKbps=\(indicated) downshiftKbps=\(logBitrate)"
+                )
+            } else {
+                AppLoggers.playback.info(
+                    "event=play.recover itemID=\(entry.media.id, privacy: .public) cause=throughput observedKbps=\(observed) indicatedKbps=\(indicated) downshiftKbps=\(logBitrate)"
+                )
+            }
+        }
+
+        player.pause()
+        let currentSeconds = player.currentTime().seconds
+        var resumeOffset = entry.offset
+        if currentSeconds.isFinite && currentSeconds > 1 {
+            let total = entry.offset + currentSeconds
+            resumeOffset = min(total, entry.media.duration)
+        }
+        let updatedEntry = PlaybackEntry(channel: entry.channel, index: entry.index, media: entry.media, offset: resumeOffset)
+        adaptiveState.lowThroughputTriggered = false
+        startPlayback(for: updatedEntry, options: newOptions, fallbackFrom: plan, fallbackReason: cause.label)
+    }
+}
+
+// MARK: - Error Handling
+
+private extension ChannelPlayerView {
+    func handlePlaybackError(_ error: Error, entry: PlaybackEntry) {
+        stopTicker()
+
+        let nsError = error as NSError
+        playbackError = nsError.localizedDescription
+        AppLoggers.playback.error(
+            "event=play.status status=failed itemID=\(entry.media.id, privacy: .public) errorDomain=\(nsError.domain, privacy: .public) errorCode=\(nsError.code)"
+        )
+    }
+}
+
+// MARK: - Channel Helpers
+
+private extension ChannelPlayerView {
+    func latestChannel(with id: Channel.ID) -> Channel? {
+        channelStore.channels.first(where: { $0.id == id })
+    }
+
+    func nextPlaybackEntry(after entry: PlaybackEntry) -> PlaybackEntry? {
+        let channel = latestChannel(with: entry.channel.id) ?? entry.channel
+        guard !channel.items.isEmpty else { return nil }
+
+        let nextIndex = (entry.index + 1) % channel.items.count
+        let nextMedia = channel.items[nextIndex]
+        return PlaybackEntry(channel: channel, index: nextIndex, media: nextMedia, offset: 0)
+    }
+}
+
+// MARK: - UI Builders
+
+private extension ChannelPlayerView {
+    func errorOverlay(message: String) -> some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Playback Error")
+                .font(.title2)
+                .bold()
+            Text(message)
+                .font(.body)
+                .foregroundStyle(.secondary)
+        }
+        .padding()
+        .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .padding()
+    }
+
+    func debugOverlay(for context: PlaybackContext) -> some View {
+        let elapsed = elapsedSeconds(for: context)
+        let total = context.entry.media.duration
+        let nextTitle = nextPlaybackEntry(after: context.entry)?.media.title ?? "—"
+
+        return VStack(alignment: .leading, spacing: 6) {
+            Text(context.entry.channel.name)
+                .font(.headline)
+            Text(context.entry.media.title)
+                .font(.callout)
+            Text("Mode: \(context.plan.mode.rawValue.uppercased()) · \(context.plan.reason)")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            Text("Offset: \(formatTime(elapsed)) / \(formatTime(total))")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+            Text("Token: \(context.plan.tokenType.rawValue)")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+            Text("Next: \(nextTitle)")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+        }
+        .padding(16)
+        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+    }
+}
+
+// MARK: - Timers
+
+private extension ChannelPlayerView {
+    func startTicker() {
+        stopTicker()
+        ticker = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { _ in
+            currentTime = player.currentTime()
+        }
+    }
+
+    func stopTicker() {
+        ticker?.invalidate()
+        ticker = nil
+    }
+
+    func elapsedSeconds(for context: PlaybackContext) -> TimeInterval {
+        let base = max(0, context.entry.offset)
+        let delta = max(0, currentTime.seconds)
+        return base + delta
+    }
+}
+
+// MARK: - Helpers
+
+private extension ChannelPlayerView {
+    func formatTime(_ interval: TimeInterval) -> String {
+        guard interval.isFinite else { return "00:00" }
+        let totalSeconds = Int(max(0, interval))
         let hours = totalSeconds / 3600
         let minutes = (totalSeconds % 3600) / 60
         let seconds = totalSeconds % 60
+
         if hours > 0 {
             return String(format: "%02d:%02d:%02d", hours, minutes, seconds)
         }
         return String(format: "%02d:%02d", minutes, seconds)
+    }
+
+    func cleanup() {
+        playbackTask?.cancel()
+        playbackTask = nil
+        clearPlayerObservers()
+        stopTicker()
+        player.pause()
+        onExit()
+    }
+}
+
+// MARK: - Models
+
+private extension ChannelPlayerView {
+    struct PlaybackEntry {
+        let channel: Channel
+        let index: Int
+        let media: Channel.Media
+        let offset: TimeInterval
+    }
+
+    struct PlaybackContext {
+        let entry: PlaybackEntry
+        let plan: PlexService.StreamPlan
+        let startedAt: Date
+    }
+
+    struct AdaptiveState {
+        var bitrateCap: Int = 10_000
+        var downshiftCount: Int = 0
+        var forceTranscode: Bool = false
+        var lowThroughputStart: Date?
+        var lowThroughputTriggered = false
+        var lastRecovery: Date?
+
+        mutating func configure(for plan: PlexService.StreamPlan, reset: Bool) {
+            bitrateCap = plan.request.preferredMaxBitrate
+            forceTranscode = plan.request.forceTranscode
+            if reset {
+                downshiftCount = 0
+                lowThroughputStart = nil
+                lowThroughputTriggered = false
+                lastRecovery = nil
+            }
+        }
+    }
+
+    enum RecoveryCause {
+        case stall
+        case throughput(observed: Int, indicated: Int)
+
+        var label: String {
+            switch self {
+            case .stall:
+                return "stall"
+            case .throughput:
+                return "throughput"
+            }
+        }
+
+        var requiresEarlyWindow: Bool {
+            switch self {
+            case .stall:
+                return true
+            case .throughput:
+                return false
+            }
+        }
     }
 }

@@ -6,13 +6,14 @@
 //
 
 import SwiftUI
-import AVKit
 import PlexKit
+import os.log
 
 struct ChannelsView: View {
     @EnvironmentObject private var channelStore: ChannelStore
     @EnvironmentObject private var authState: AuthState
     @EnvironmentObject private var plexService: PlexService
+    @StateObject private var coordinator = ChannelsCoordinator()
 
     private struct LibrarySelection: Identifiable {
         let library: PlexLibrary
@@ -20,8 +21,12 @@ struct ChannelsView: View {
     }
 
     private enum Destination: Hashable {
-        case channel(Channel)
         case quickPlay(LibraryPreviewItem)
+    }
+
+    enum FocusTarget: Hashable {
+        case now(Channel.ID)
+        case upNext(Channel.ID, String)
     }
 
     @State private var path: [Destination] = []
@@ -31,9 +36,11 @@ struct ChannelsView: View {
     @State private var isLoadingPreviews = false
     @State private var hasAutoPresentedPicker = false
     @State private var quickPlayError: String?
+    @State private var pendingFocusRestore: FocusTarget?
 
     @FocusState private var headerAddFocused: Bool
-    @FocusState private var focusedChannelID: Channel.ID?
+    @FocusState private var focusedCard: FocusTarget?
+    @State private var lastFocusedCard: FocusTarget?
 
     var body: some View {
         NavigationStack(path: $path) {
@@ -42,20 +49,16 @@ struct ChannelsView: View {
 
                 if channelStore.channels.isEmpty {
                     emptyState
+                        .frame(maxHeight: .infinity)
                 } else {
                     channelList
                 }
-
-                Spacer()
             }
             .padding(.horizontal, 80)
-            .padding(.vertical, 40)
+            .padding(.top, 40)
             .background(Color.black.opacity(0.001))
             .navigationDestination(for: Destination.self) { destination in
                 switch destination {
-                case .channel(let channel):
-                    ChannelPlayerView(channel: channel)
-                        .environmentObject(plexService)
                 case .quickPlay(let item):
                     QuickPlayView(item: item)
                         .environmentObject(plexService)
@@ -101,6 +104,25 @@ struct ChannelsView: View {
             .environmentObject(plexService)
             .environmentObject(channelStore)
         }
+        .fullScreenCover(item: $coordinator.playbackRequest, onDismiss: {
+            AppLoggers.playback.info("event=player.cover.dismissed")
+            coordinator.dismissPlayback()
+            restoreFocusAfterPlayback()
+        }) { request in
+            ChannelPlayerView(
+                request: request,
+                onExit: {
+                    coordinator.dismissPlayback()
+                }
+            )
+            .environmentObject(plexService)
+            .environmentObject(channelStore)
+            .onAppear {
+                AppLoggers.playback.info(
+                    "event=player.cover.shown channelID=\(request.channelID.uuidString, privacy: .public) channelName=\(request.channelName, privacy: .public) itemID=\(request.itemID, privacy: .public)"
+                )
+            }
+        }
         .onAppear {
             evaluateInitialState()
             loadPreviewItemsIfNeeded()
@@ -119,10 +141,22 @@ struct ChannelsView: View {
         } message: {
             Text(quickPlayError ?? "An unknown error occurred")
         }
+        .onChange(of: focusedCard) { _, newValue in
+            lastFocusedCard = newValue
+            guard case let .now(channelID) = newValue else { return }
+            guard let channel = channelStore.channels.first(where: { $0.id == channelID }) else { return }
+            AppLoggers.channel.info(
+                "event=channel.focus channelID=\(channel.id.uuidString, privacy: .public) channelName=\(channel.name, privacy: .public)"
+            )
+        }
     }
+}
 
-    private var header: some View {
-        HStack {
+// MARK: - Components
+
+private extension ChannelsView {
+    var header: some View {
+        HStack(spacing: 16) {
             VStack(alignment: .leading, spacing: 6) {
                 Text(statusLine)
                     .font(.headline)
@@ -133,7 +167,7 @@ struct ChannelsView: View {
                 }
             }
 
-            Spacer()
+            Spacer(minLength: 0)
 
             Button {
                 showLibraryPicker = true
@@ -143,10 +177,23 @@ struct ChannelsView: View {
             }
             .buttonStyle(.borderedProminent)
             .focused($headerAddFocused)
+
+            #if DEBUG
+            if let firstChannel = channelStore.channels.first {
+                Button {
+                    pendingFocusRestore = .now(firstChannel.id)
+                    _ = coordinator.presentForce(channel: firstChannel)
+                } label: {
+                    Label("Force Play Now", systemImage: "play.rectangle.fill")
+                        .font(.title3)
+                }
+                .buttonStyle(.borderless)
+            }
+            #endif
         }
     }
 
-    private var emptyState: some View {
+    var emptyState: some View {
         VStack(alignment: .leading, spacing: 32) {
             Text("Create your first channel to start watching your Plex libraries as live TV.")
                 .font(.title3)
@@ -165,6 +212,7 @@ struct ChannelsView: View {
                                 }
                             }
                         }
+                        .padding(.vertical, 4)
                     }
                 }
             } else if isLoadingPreviews {
@@ -173,23 +221,161 @@ struct ChannelsView: View {
         }
     }
 
-    private var channelList: some View {
-        VStack(alignment: .leading, spacing: 24) {
-            ForEach(channelStore.channels) { channel in
-                NavigationLink(value: Destination.channel(channel)) {
+    var channelList: some View {
+        ScrollView(.vertical, showsIndicators: false) {
+            LazyVStack(alignment: .leading, spacing: 48) {
+                ForEach(channelStore.channels) { channel in
                     ChannelRowView(
                         channel: channel,
-                        isFocused: focusedChannelID == channel.id
+                        focusBinding: $focusedCard,
+                        nowFocusID: .now(channel.id),
+                        upNextFocusID: { item in
+                            .upNext(channel.id, item.id)
+                        },
+                        onPrimaryPlay: { channel in
+                            handlePlayNow(channel)
+                        },
+                        onMenuAction: { channel, action in
+                            handleMenuAction(channel: channel, action: action)
+                        },
+                        onPlayItem: { channel, media in
+                            handlePlayItem(channel: channel, media: media)
+                        },
+                        onItemMenuAction: { channel, media, action in
+                            handleItemMenuAction(channel: channel, media: media, action: action)
+                        }
                     )
+                    .environmentObject(plexService)
+                    .focusSectionIfAvailable()
                 }
-                .buttonStyle(.plain)
-                .focusable(true)
-                .focused($focusedChannelID, equals: channel.id)
             }
+            .padding(.top, 8)
+        }
+    }
+}
+
+// MARK: - Playback Handlers
+
+private extension ChannelsView {
+    func handlePlayNow(_ channel: Channel) {
+        AppLoggers.channel.info(
+            "event=channel.tap.received handler=handlePlayNow channelID=\(channel.id.uuidString, privacy: .public) channelName=\(channel.name, privacy: .public)"
+        )
+        
+        let timestamp = Date()
+        guard let position = channel.playbackPosition(at: timestamp) else {
+            AppLoggers.channel.error(
+                "event=channel.tap status=error reason=\"no_schedule\" channelID=\(channel.id.uuidString, privacy: .public)"
+            )
+            return
+        }
+
+        let media = position.media
+        let offset = position.offset
+        let nowTitle = media.metadata?.title ?? media.title
+
+        AppLoggers.channel.info(
+            "event=channel.tap.prepare channelID=\(channel.id.uuidString, privacy: .public) channelName=\(channel.name, privacy: .public) itemID=\(media.id, privacy: .public) itemTitle=\(nowTitle, privacy: .public) offsetSec=\(Int(offset))"
+        )
+
+        pendingFocusRestore = .now(channel.id)
+        let request = coordinator.presentNow(channel: channel, at: timestamp, source: .tap)
+        
+        AppLoggers.channel.info(
+            "event=channel.tap.completed channelID=\(channel.id.uuidString, privacy: .public) requestCreated=\(request != nil)"
+        )
+    }
+
+    func handleMenuAction(channel: Channel, action: ChannelRowView.MenuAction) {
+        let timestamp = Date()
+        switch action {
+        case .startNow:
+            AppLoggers.channel.info(
+                "event=channel.longPress action=startNow channelID=\(channel.id.uuidString, privacy: .public) channelName=\(channel.name, privacy: .public)"
+            )
+            pendingFocusRestore = .now(channel.id)
+            _ = coordinator.presentNow(channel: channel, at: timestamp, source: .tap)
+        case .startBeginning:
+            guard let current = channel.nowPlaying(at: timestamp) else {
+                AppLoggers.channel.error(
+                    "event=channel.longPress action=startBeginning status=error reason=\"no_schedule\" channelID=\(channel.id.uuidString, privacy: .public)"
+                )
+                return
+            }
+
+            AppLoggers.channel.info(
+                "event=channel.longPress action=startBeginning channelID=\(channel.id.uuidString, privacy: .public) channelName=\(channel.name, privacy: .public) itemID=\(current.id, privacy: .public)"
+            )
+
+            pendingFocusRestore = .now(channel.id)
+            _ = coordinator.presentItem(
+                channel: channel,
+                itemID: current.id,
+                offset: 0,
+                source: .beginning,
+                at: timestamp
+            )
         }
     }
 
-    private func evaluateInitialState() {
+    func handlePlayItem(channel: Channel, media: Channel.Media) {
+        let itemTitle = media.metadata?.title ?? media.title
+        AppLoggers.channel.info(
+            "event=channel.next.tap.received handler=handlePlayItem channelID=\(channel.id.uuidString, privacy: .public) channelName=\(channel.name, privacy: .public) itemID=\(media.id, privacy: .public) itemTitle=\(itemTitle, privacy: .public)"
+        )
+
+        pendingFocusRestore = .now(channel.id)
+        let request = coordinator.presentItem(
+            channel: channel,
+            itemID: media.id,
+            offset: 0,
+            source: .upnext,
+            at: Date()
+        )
+        
+        AppLoggers.channel.info(
+            "event=channel.next.tap.completed channelID=\(channel.id.uuidString, privacy: .public) itemID=\(media.id, privacy: .public) requestCreated=\(request != nil)"
+        )
+    }
+
+    func handleItemMenuAction(
+        channel: Channel,
+        media: Channel.Media,
+        action: ChannelRowView.MenuAction
+    ) {
+        switch action {
+        case .startNow:
+            AppLoggers.channel.info(
+                "event=channel.longPress action=startNow channelID=\(channel.id.uuidString, privacy: .public) channelName=\(channel.name, privacy: .public) itemID=\(media.id, privacy: .public)"
+            )
+            pendingFocusRestore = .now(channel.id)
+            _ = coordinator.presentItem(
+                channel: channel,
+                itemID: media.id,
+                offset: 0,
+                source: .upnext,
+                at: Date()
+            )
+        case .startBeginning:
+            AppLoggers.channel.info(
+                "event=channel.longPress action=startBeginning channelID=\(channel.id.uuidString, privacy: .public) channelName=\(channel.name, privacy: .public) itemID=\(media.id, privacy: .public)"
+            )
+            pendingFocusRestore = .now(channel.id)
+            _ = coordinator.presentItem(
+                channel: channel,
+                itemID: media.id,
+                offset: 0,
+                source: .beginning,
+                at: Date()
+            )
+        }
+    }
+}
+
+// MARK: - Helpers
+
+private extension ChannelsView {
+    func evaluateInitialState() {
         if channelStore.channels.isEmpty {
             if !hasAutoPresentedPicker && !showLibraryPicker && pickedLibrary == nil {
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
@@ -198,16 +384,16 @@ struct ChannelsView: View {
                 hasAutoPresentedPicker = true
             }
             headerAddFocused = true
-            focusedChannelID = nil
+            focusedCard = nil
         } else {
             headerAddFocused = false
             if let first = channelStore.channels.first {
-                focusedChannelID = first.id
+                focusedCard = .now(first.id)
             }
         }
     }
 
-    private func loadPreviewItemsIfNeeded() {
+    func loadPreviewItemsIfNeeded() {
         guard previewItems.isEmpty, !isLoadingPreviews else { return }
         guard let libraries = plexService.session?.libraries else { return }
 
@@ -235,15 +421,17 @@ struct ChannelsView: View {
 
                 await MainActor.run {
                     self.previewItems = previews
-                    print("[ChannelsView] Loaded \(previews.count) preview items from \(targetLibrary.title ?? "library")")
+                    AppLoggers.channel.info(
+                        "event=channel.previewLoaded libraryID=\(targetLibrary.key, privacy: .public) itemCount=\(previews.count)"
+                    )
                 }
             } catch {
-                print("[ChannelsView] Failed to load preview items: \(error)")
+                AppLoggers.channel.error("event=channel.previewFailed error=\(String(describing: error), privacy: .public)")
             }
         }
     }
 
-    private func choosePreviewLibrary(from libraries: [PlexLibrary]) -> PlexLibrary? {
+    func choosePreviewLibrary(from libraries: [PlexLibrary]) -> PlexLibrary? {
         let preferredTypes: Set<PlexMediaType> = [.movie, .show, .episode]
         if let match = libraries.first(where: { preferredTypes.contains($0.type) }) {
             return match
@@ -251,73 +439,60 @@ struct ChannelsView: View {
         return libraries.first
     }
 
-    private func playPreviewItem(_ item: LibraryPreviewItem) {
+    func playPreviewItem(_ item: LibraryPreviewItem) {
         if let descriptor = plexService.streamDescriptor(for: item.media) ??
             plexService.streamDescriptor(for: item.media, preferTranscode: true) {
             let enriched = item.withStreamDescriptor(descriptor)
-            print("[ChannelsView] Quick play prepared for \(item.title) via \(descriptor.kind.rawValue)")
+            AppLoggers.playback.info(
+                "event=quickPlay.prepared itemID=\(item.id, privacy: .public) title=\(item.title, privacy: .public) mode=\(descriptor.kind.rawValue, privacy: .public)"
+            )
             path.append(.quickPlay(enriched))
         } else {
             let message = PlexService.PlaybackError.noStreamURL.errorDescription ?? "Unable to start playback."
-            print("[ChannelsView] Quick play unavailable for \(item.title): \(message)")
+            AppLoggers.playback.error(
+                "event=quickPlay.unavailable itemID=\(item.id, privacy: .public) title=\(item.title, privacy: .public) reason=\"\(message, privacy: .public)\""
+            )
             quickPlayError = message
         }
     }
 
-    private func focusChannel(_ channel: Channel) {
+    func focusChannel(_ channel: Channel) {
         DispatchQueue.main.async {
-            focusedChannelID = channel.id
+            focusedCard = .now(channel.id)
         }
     }
 
-    private var statusLine: String {
+    func restoreFocusAfterPlayback() {
+        let target = pendingFocusRestore ?? lastFocusedCard ?? channelStore.channels.first.map { FocusTarget.now($0.id) }
+        pendingFocusRestore = nil
+        DispatchQueue.main.async {
+            focusedCard = target
+        }
+    }
+
+    var statusLine: String {
         guard let sessionInfo = authState.session else {
             return "Not linked"
         }
         return "Linked to \(sessionInfo.accountName) · \(sessionInfo.serverName)"
     }
 
-    private var substatusLine: String? {
+    var substatusLine: String? {
         guard let sessionInfo = authState.session else { return nil }
         return "\(sessionInfo.libraryCount) libraries available"
     }
-
 }
+
+// MARK: - Preview Items
 
 private struct PosterButton: View {
     let item: LibraryPreviewItem
     var action: () -> Void
 
-    @State private var isFocused = false
-
     var body: some View {
         Button(action: action) {
             VStack(alignment: .leading, spacing: 8) {
-                AsyncImage(url: item.thumbURL) { phase in
-                    switch phase {
-                    case .success(let image):
-                        image
-                            .resizable()
-                            .scaledToFit()
-                            .frame(width: 200, height: 300)
-                            .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
-                    case .failure:
-                        Rectangle()
-                            .fill(Color.gray.opacity(0.4))
-                            .frame(width: 200, height: 300)
-                            .overlay(Image(systemName: "film").font(.largeTitle).foregroundStyle(.white.opacity(0.7)))
-                            .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
-                    case .empty:
-                        ProgressView()
-                            .frame(width: 200, height: 300)
-                    @unknown default:
-                        Rectangle()
-                            .fill(Color.gray.opacity(0.4))
-                            .frame(width: 200, height: 300)
-                            .overlay(Image(systemName: "film").font(.largeTitle).foregroundStyle(.white.opacity(0.7)))
-                            .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
-                    }
-                }
+                poster
                 Text(item.title)
                     .font(.caption)
                     .lineLimit(1)
@@ -325,103 +500,35 @@ private struct PosterButton: View {
             .frame(width: 200)
         }
         .buttonStyle(.plain)
-        .focusableCompat { focused in
-            withAnimation(.easeInOut(duration: 0.2)) {
-                isFocused = focused
+    }
+
+    private var poster: some View {
+        CachedAsyncImage(url: item.thumbURL) { phase in
+            switch phase {
+            case .success(let image):
+                image
+                    .resizable()
+                    .scaledToFill()
+                    .frame(width: 200, height: 300)
+                    .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+            case .failure:
+                placeholder
+            case .empty:
+                ProgressView()
+                    .frame(width: 200, height: 300)
             }
         }
-        .scaleEffect(isFocused ? 1.08 : 1.0)
-        .padding(.vertical, 4)
-        .overlay(
-            RoundedRectangle(cornerRadius: 18, style: .continuous)
-                .stroke(Color.accentColor.opacity(isFocused ? 1 : 0), lineWidth: 4)
-                .shadow(color: isFocused ? Color.accentColor.opacity(0.45) : .clear, radius: 12, y: 6)
-        )
-    }
-}
-
-private struct ChannelRowView: View {
-    let channel: Channel
-    let isFocused: Bool
-
-    @State private var hasLoggedNowNext = false
-
-    var body: some View {
-        ZStack {
-            RoundedRectangle(cornerRadius: 18, style: .continuous)
-                .fill(.ultraThinMaterial)
-                .overlay(
-                    RoundedRectangle(cornerRadius: 18, style: .continuous)
-                        .stroke(Color.accentColor.opacity(isFocused ? 1 : 0), lineWidth: 4)
-                )
-                .shadow(color: isFocused ? Color.accentColor.opacity(0.4) : .clear, radius: 16, y: 8)
-
-            HStack(spacing: 24) {
-                Image(systemName: "play.circle.fill")
-                    .foregroundColor(.accentColor)
-                    .font(.system(size: 48))
-
-                TimelineView(.periodic(from: .init(), by: 30)) { context in
-                    let now = context.date
-                    VStack(alignment: .leading, spacing: 6) {
-                        Text(channel.name)
-                            .font(.title3)
-                            .bold()
-
-                        if let playback = channel.playbackState(at: now),
-                           let remaining = channel.timeRemaining(at: now) {
-                            let nowTitle = playback.media.metadata?.title ?? playback.media.title
-                            Text("Now: \(nowTitle) · \(formattedTime(remaining)) left")
-                                .font(.callout)
-                                .foregroundStyle(.primary)
-                        } else {
-                            Text("Now: Schedule pending…")
-                                .font(.callout)
-                                .foregroundStyle(.secondary)
-                        }
-
-                        if let next = channel.nextUp(after: now) {
-                            let nextTitle = next.metadata?.title ?? next.title
-                            Text("Next: \(nextTitle)")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                        }
-                    }
-                }
-
-                Spacer(minLength: 0)
-            }
-            .padding(.horizontal, 24)
-            .padding(.vertical, 20)
-        }
-        .frame(height: 140)
-        .scaleEffect(isFocused ? 1.05 : 1.0)
-        .animation(.easeInOut(duration: 0.2), value: isFocused)
-        .onAppear { logNowNextIfNeeded(at: Date()) }
-        .onChange(of: channel.id) { _, _ in
-            hasLoggedNowNext = false
-            logNowNextIfNeeded(at: Date())
-        }
     }
 
-    private func logNowNextIfNeeded(at date: Date) {
-        guard !hasLoggedNowNext else { return }
-        guard let playback = channel.playbackState(at: date) else { return }
-        let nowTitle = playback.media.metadata?.title ?? playback.media.title
-        let remaining = channel.timeRemaining(at: date) ?? 0
-        let next = channel.nextUp(after: date)
-        let nextTitle = next?.metadata?.title ?? next?.title ?? "Unknown"
-        DispatchQueue.main.async {
-            hasLoggedNowNext = true
-            print("[ChannelsView] Now/Next for \(channel.name): Now=\(nowTitle) (\(Int(remaining))s left) · Next=\(nextTitle)")
-        }
-    }
-
-    private func formattedTime(_ interval: TimeInterval) -> String {
-        let totalSeconds = Int(max(0, interval))
-        let minutes = totalSeconds / 60
-        let seconds = totalSeconds % 60
-        return String(format: "%02d:%02d", minutes, seconds)
+    private var placeholder: some View {
+        RoundedRectangle(cornerRadius: 16, style: .continuous)
+            .fill(Color.gray.opacity(0.4))
+            .frame(width: 200, height: 300)
+            .overlay(
+                Image(systemName: "film")
+                    .font(.largeTitle)
+                    .foregroundStyle(.white.opacity(0.7))
+            )
     }
 }
 

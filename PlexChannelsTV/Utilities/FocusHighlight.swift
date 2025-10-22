@@ -21,6 +21,19 @@ extension View {
         self
         #endif
     }
+
+    @ViewBuilder
+    func focusSectionIfAvailable() -> some View {
+        #if os(tvOS)
+        if #available(tvOS 17.0, *) {
+            focusSection()
+        } else {
+            self
+        }
+        #else
+        self
+        #endif
+    }
 }
 
 #if os(tvOS)

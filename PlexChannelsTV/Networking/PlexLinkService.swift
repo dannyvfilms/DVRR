@@ -15,6 +15,8 @@ final class PlexLinkService {
     private let device: String
     private let platform: String
     private let deviceName: String
+    private var pollTask: Task<String, Error>?
+    private var isLinked = false
 
     init(
         session: URLSession = .shared,
@@ -45,6 +47,18 @@ final class PlexLinkService {
         )
     }
 
+    func setLinked(_ linked: Bool) {
+        isLinked = linked
+        if linked {
+            cancelPollingTask()
+        }
+    }
+
+    private func cancelPollingTask() {
+        pollTask?.cancel()
+        pollTask = nil
+    }
+
     func requestPin() async throws -> PinResponse {
         var components = URLComponents(string: "https://plex.tv/api/v2/pins")!
         components.queryItems = [
@@ -59,34 +73,66 @@ final class PlexLinkService {
         try validate(response: response, data: data)
 
         logResponse(endpoint: "requestPin", data: data)
-        let decoder = makeDecoder()
+        let decoder = Self.makeDecoder()
         return try decoder.decode(PinResponse.self, from: data)
     }
 
     func pollPin(id: Int, until deadline: Date) async throws -> String {
+        if isLinked {
+            throw LinkError.alreadyLinked
+        }
+
+        cancelPollingTask()
+
         let url = URL(string: "https://plex.tv/api/v2/pins/\(id)")!
+        let headers = baseHeaders
+        let session = session
 
-        while true {
-            if Date() >= deadline {
-                throw LinkError.pinExpired
+        let task = Task<String, Error> { [deadline] in
+            while true {
+                try Task.checkCancellation()
+
+                if Date() >= deadline {
+                    throw LinkError.pinExpired
+                }
+
+                if self.isLinked {
+                    throw CancellationError()
+                }
+
+                var request = URLRequest(url: url)
+                request.httpMethod = "GET"
+                headers.forEach { key, value in
+                    request.setValue(value, forHTTPHeaderField: key)
+                }
+
+                let (data, response) = try await session.data(for: request)
+                try self.validate(response: response, data: data)
+
+                let decoder = Self.makeDecoder()
+                let pin = try decoder.decode(PinResponse.self, from: data)
+
+                if let token = pin.authToken, !token.isEmpty {
+                    self.isLinked = true
+                    return token
+                }
+
+                try await Task.sleep(nanoseconds: 2_000_000_000)
             }
+        }
 
-            var request = URLRequest(url: url)
-            request.httpMethod = "GET"
-            addHeaders(to: &request, additional: [:])
+        pollTask = task
 
-            let (data, response) = try await session.data(for: request)
-            try validate(response: response, data: data)
-
-            logResponse(endpoint: "pollPin", data: data)
-            let decoder = makeDecoder()
-            let pin = try decoder.decode(PinResponse.self, from: data)
-
-            if let token = pin.authToken, !token.isEmpty {
-                return token
+        do {
+            let token = try await task.value
+            pollTask = nil
+            return token
+        } catch {
+            pollTask = nil
+            if error is CancellationError {
+                throw error
             }
-
-            try await Task.sleep(nanoseconds: 2_000_000_000)
+            throw error
         }
     }
 
@@ -107,7 +153,7 @@ final class PlexLinkService {
         try validate(response: response, data: data)
 
         logResponse(endpoint: "fetchResources", data: data)
-        if let json = try? makeDecoder().decode([ResourceDevice].self, from: data) {
+        if let json = try? Self.makeDecoder().decode([ResourceDevice].self, from: data) {
             return json
         }
 
@@ -124,7 +170,7 @@ final class PlexLinkService {
         try validate(response: response, data: data)
         logResponse(endpoint: "fetchAccount", data: data)
 
-        let decoder = makeDecoder()
+        let decoder = Self.makeDecoder()
         let accountResponse = try decoder.decode(PlexAccountResponse.self, from: data)
         return accountResponse.user
     }
@@ -203,7 +249,7 @@ final class PlexLinkService {
         }
     }
 
-    private func makeDecoder() -> JSONDecoder {
+    private static func makeDecoder() -> JSONDecoder {
         let decoder = JSONDecoder()
         decoder.keyDecodingStrategy = .convertFromSnakeCase
         decoder.dateDecodingStrategy = .custom { decoder in
@@ -217,15 +263,7 @@ final class PlexLinkService {
         return decoder
     }
 
-    private func logResponse(endpoint: String, data: Data) {
-#if DEBUG
-        if let body = String(data: data, encoding: .utf8) {
-            print("[PlexLinkService] \(endpoint) response: \(body)")
-        } else {
-            print("[PlexLinkService] \(endpoint) response (non-utf8, \(data.count) bytes)")
-        }
-#endif
-    }
+    private func logResponse(endpoint: String, data: Data) { }
 
     private static let iso8601WithFractional: ISO8601DateFormatter = {
         let formatter = ISO8601DateFormatter()
@@ -242,10 +280,11 @@ final class PlexLinkService {
     }()
 }
 
-enum LinkError: LocalizedError {
+enum LinkError: LocalizedError, Equatable {
     case pinExpired
     case invalidResponse
     case httpError(status: Int, body: String)
+    case alreadyLinked
 
     var errorDescription: String? {
         switch self {
@@ -255,6 +294,8 @@ enum LinkError: LocalizedError {
             return "Received an unexpected response from Plex."
         case .httpError(let status, let body):
             return "Plex returned an error (\(status)): \(body)"
+        case .alreadyLinked:
+            return "This device is already linked to Plex."
         }
     }
 }

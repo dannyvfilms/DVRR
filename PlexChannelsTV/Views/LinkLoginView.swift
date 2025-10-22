@@ -114,6 +114,11 @@ struct LinkLoginView: View {
         invalidateTimers()
         statusMessage = nil
         authState.linkingError = nil
+
+        guard !authState.isLinked else {
+            return
+        }
+
         isRequesting = true
 
         Task {
@@ -157,6 +162,11 @@ struct LinkLoginView: View {
     }
 
     private func startPolling(for pin: PinResponse) {
+        guard !authState.isLinked else {
+            isPolling = false
+            return
+        }
+
         isPolling = true
         pollTask = Task {
             do {
@@ -168,6 +178,14 @@ struct LinkLoginView: View {
                     invalidateTimers()
                 }
             } catch {
+                if error is CancellationError || (error as? LinkError) == .alreadyLinked {
+                    await MainActor.run {
+                        isPolling = false
+                        pollTask = nil
+                    }
+                    return
+                }
+
                 guard !Task.isCancelled else { return }
                 await MainActor.run {
                     statusMessage = error.localizedDescription

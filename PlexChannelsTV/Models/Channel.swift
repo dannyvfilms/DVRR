@@ -18,6 +18,18 @@ struct Channel: Identifiable, Codable, Hashable {
         let partKey: String?
         let partID: Int?
         let metadata: Metadata?
+        let artwork: Artwork
+
+        enum CodingKeys: String, CodingKey {
+            case id
+            case title
+            case duration
+            case metadataKey
+            case partKey
+            case partID
+            case metadata
+            case artwork
+        }
 
         struct Metadata: Codable, Hashable {
             let title: String?
@@ -25,6 +37,45 @@ struct Channel: Identifiable, Codable, Hashable {
             let genres: [String]
             let addedAt: Date?
             let type: PlexMediaType?
+            let guid: String?
+        }
+
+        struct Artwork: Codable, Hashable {
+            let thumb: String?
+            let art: String?
+            let parentThumb: String?
+            let grandparentThumb: String?
+            let grandparentArt: String?
+            let grandparentTheme: String?
+            let theme: String?
+
+            init(
+                thumb: String? = nil,
+                art: String? = nil,
+                parentThumb: String? = nil,
+                grandparentThumb: String? = nil,
+                grandparentArt: String? = nil,
+                grandparentTheme: String? = nil,
+                theme: String? = nil
+            ) {
+                self.thumb = thumb
+                self.art = art
+                self.parentThumb = parentThumb
+                self.grandparentThumb = grandparentThumb
+                self.grandparentArt = grandparentArt
+                self.grandparentTheme = grandparentTheme
+                self.theme = theme
+            }
+
+            var isEmpty: Bool {
+                thumb == nil &&
+                art == nil &&
+                parentThumb == nil &&
+                grandparentThumb == nil &&
+                grandparentArt == nil &&
+                grandparentTheme == nil &&
+                theme == nil
+            }
         }
 
         init(
@@ -34,7 +85,8 @@ struct Channel: Identifiable, Codable, Hashable {
             metadataKey: String? = nil,
             partKey: String? = nil,
             partID: Int? = nil,
-            metadata: Metadata? = nil
+            metadata: Metadata? = nil,
+            artwork: Artwork = Artwork()
         ) {
             self.id = id
             self.title = title
@@ -43,6 +95,33 @@ struct Channel: Identifiable, Codable, Hashable {
             self.partKey = partKey
             self.partID = partID
             self.metadata = metadata
+            self.artwork = artwork
+        }
+
+        init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            id = try container.decode(String.self, forKey: .id)
+            title = try container.decode(String.self, forKey: .title)
+            duration = try container.decode(TimeInterval.self, forKey: .duration)
+            metadataKey = try container.decodeIfPresent(String.self, forKey: .metadataKey)
+            partKey = try container.decodeIfPresent(String.self, forKey: .partKey)
+            partID = try container.decodeIfPresent(Int.self, forKey: .partID)
+            metadata = try container.decodeIfPresent(Metadata.self, forKey: .metadata)
+            artwork = try container.decodeIfPresent(Artwork.self, forKey: .artwork) ?? Artwork()
+        }
+
+        func encode(to encoder: Encoder) throws {
+            var container = encoder.container(keyedBy: CodingKeys.self)
+            try container.encode(id, forKey: .id)
+            try container.encode(title, forKey: .title)
+            try container.encode(duration, forKey: .duration)
+            try container.encodeIfPresent(metadataKey, forKey: .metadataKey)
+            try container.encodeIfPresent(partKey, forKey: .partKey)
+            try container.encodeIfPresent(partID, forKey: .partID)
+            try container.encodeIfPresent(metadata, forKey: .metadata)
+            if !artwork.isEmpty {
+                try container.encode(artwork, forKey: .artwork)
+            }
         }
     }
 
@@ -146,8 +225,48 @@ extension Channel.Media {
                 year: item.year,
                 genres: item.genres.map { $0.tag },
                 addedAt: item.addedAt,
-                type: item.type
+                type: item.type,
+                guid: item.guid
+            ),
+            artwork: Channel.Media.Artwork(
+                thumb: item.thumb,
+                art: item.art,
+                parentThumb: item.parentThumb,
+                grandparentThumb: item.grandparentThumb,
+                grandparentArt: item.grandparentArt,
+                grandparentTheme: item.grandparentTheme,
+                theme: item.theme
             )
         )
+    }
+
+    var backgroundArtworkCandidates: [String] {
+        [
+            artwork.art,
+            artwork.grandparentArt,
+            artwork.thumb,
+            artwork.parentThumb,
+            artwork.grandparentThumb
+        ].compactMap { $0 }
+    }
+
+    var posterArtworkCandidates: [String] {
+        [
+            artwork.thumb,
+            artwork.parentThumb,
+            artwork.grandparentThumb,
+            artwork.art,
+            artwork.grandparentArt
+        ].compactMap { $0 }
+    }
+
+    var logoArtworkCandidates: [String] {
+        // For movies, Plex stores clearLogos at /library/metadata/{ratingKey}/clearLogo
+        // Try this first, then fall back to theme fields (for TV shows)
+        [
+            "/library/metadata/\(id)/clearLogo",
+            artwork.grandparentTheme,
+            artwork.theme
+        ].compactMap { $0 }
     }
 }

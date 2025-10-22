@@ -80,15 +80,11 @@ struct QuickPlayView: View {
             return
         }
 
-        do {
-            if let descriptor = plexService.streamDescriptor(for: item.media) ??
-                plexService.streamDescriptor(for: item.media, preferTranscode: true) {
-                startPlayer(with: descriptor)
-            } else {
-                playbackError = PlexService.PlaybackError.noStreamURL.errorDescription ?? "Unable to start playback."
-            }
-        } catch {
-            playbackError = error.localizedDescription
+        if let descriptor = plexService.streamDescriptor(for: item.media) ??
+            plexService.streamDescriptor(for: item.media, preferTranscode: true) {
+            startPlayer(with: descriptor)
+        } else {
+            playbackError = PlexService.PlaybackError.noStreamURL.errorDescription ?? "Unable to start playback."
         }
     }
 

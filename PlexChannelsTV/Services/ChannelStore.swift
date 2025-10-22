@@ -42,10 +42,37 @@ final class ChannelStore: ObservableObject {
     }
 
     private let defaults: UserDefaults
+    private let fileManager: FileManager
+    private let storageURL: URL
+    private var isRestoring = false
 
-    init(userDefaults: UserDefaults = .standard) {
+    init(
+        userDefaults: UserDefaults = .standard,
+        fileManager: FileManager = .default
+    ) {
         self.defaults = userDefaults
-        self.channels = Self.loadChannels(from: defaults)
+        self.fileManager = fileManager
+        self.storageURL = ChannelStore.resolveStorageURL(using: fileManager)
+
+        isRestoring = true
+
+        var needsMigrationPersist = false
+
+        if let fileChannels = ChannelStore.loadChannels(fromFile: storageURL, using: fileManager) {
+            self.channels = fileChannels
+        } else if let legacyChannels = ChannelStore.loadChannels(from: defaults) {
+            self.channels = legacyChannels
+            defaults.removeObject(forKey: Self.storageKey)
+            needsMigrationPersist = true
+        } else {
+            self.channels = []
+        }
+
+        isRestoring = false
+
+        if needsMigrationPersist {
+            persistChannels()
+        }
     }
 
     func containsChannel(for library: PlexLibrary) -> Bool {
@@ -124,21 +151,58 @@ final class ChannelStore: ObservableObject {
     }
 
     private func persistChannels() {
+        guard !isRestoring else { return }
+
         do {
             let data = try JSONEncoder().encode(channels)
-            defaults.set(data, forKey: Self.storageKey)
+            try ensureStorageDirectoryExists()
+            try data.write(to: storageURL, options: .atomic)
         } catch {
-            print("ChannelStore.persistChannels encoding error: \(error)")
+            print("ChannelStore.persistChannels write error: \(error)")
         }
     }
 
-    private static func loadChannels(from defaults: UserDefaults) -> [Channel] {
-        guard let data = defaults.data(forKey: storageKey) else { return [] }
+    private func ensureStorageDirectoryExists() throws {
+        let directory = storageURL.deletingLastPathComponent()
+        guard !fileManager.fileExists(atPath: directory.path) else { return }
+        try fileManager.createDirectory(at: directory, withIntermediateDirectories: true, attributes: nil)
+    }
+
+    private static func resolveStorageURL(using fileManager: FileManager) -> URL {
+        let baseURL: URL
+        if let appSupport = try? fileManager.url(
+            for: .applicationSupportDirectory,
+            in: .userDomainMask,
+            appropriateFor: nil,
+            create: true
+        ) {
+            baseURL = appSupport
+        } else if let documents = fileManager.urls(for: .documentDirectory, in: .userDomainMask).first {
+            baseURL = documents
+        } else {
+            baseURL = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
+        }
+        return baseURL.appendingPathComponent("channels.json", isDirectory: false)
+    }
+
+    private static func loadChannels(from defaults: UserDefaults) -> [Channel]? {
+        guard let data = defaults.data(forKey: storageKey) else { return nil }
         do {
             return try JSONDecoder().decode([Channel].self, from: data)
         } catch {
             print("ChannelStore.loadChannels decode error: \(error)")
-            return []
+            return nil
+        }
+    }
+
+    private static func loadChannels(fromFile url: URL, using fileManager: FileManager) -> [Channel]? {
+        guard fileManager.fileExists(atPath: url.path) else { return nil }
+        do {
+            let data = try Data(contentsOf: url)
+            return try JSONDecoder().decode([Channel].self, from: data)
+        } catch {
+            print("ChannelStore.loadChannels file decode error: \(error)")
+            return nil
         }
     }
 }
