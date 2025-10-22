@@ -42,8 +42,10 @@ struct ChannelBuilderFlowView: View {
         NavigationStack {
             VStack(alignment: .leading, spacing: 32) {
                 content
+                    .focusSectionIfAvailable()
                 Spacer(minLength: 20)
                 footer
+                    .focusSectionIfAvailable()
             }
             .padding(.horizontal, 80)
             .padding(.vertical, 40)

@@ -40,12 +40,15 @@ struct ChannelsView: View {
         NavigationStack(path: $path) {
             VStack(alignment: .leading, spacing: 32) {
                 header
+                    .focusSectionIfAvailable()
 
                 if channelStore.channels.isEmpty {
                     emptyState
                         .frame(maxHeight: .infinity)
+                        .focusSectionIfAvailable()
                 } else {
                     channelList
+                        .focusSectionIfAvailable()
                 }
             }
             .padding(.horizontal, 80)
