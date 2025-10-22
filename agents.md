@@ -477,6 +477,13 @@ VStack {
 **Status**: Fixed (Task 18)  
 **Solution**: Use `TimelineView(.periodic(from: .now, by: 30))` instead of manual timer.
 
+### Issue: Playback Skips Forward on Buffer Recovery
+
+**Status**: Fixed (Task 28)  
+**Symptoms**: When HLS stream stalls and recovers, playback jumps forward (e.g., from 1hr 46min to 3hr 8min)  
+**Root Cause**: When using `copyts=1` (copy timestamps), AVPlayer's `currentTime()` returns absolute PTS from original file, not relative time. Recovery code was adding `entry.offset` to `currentSeconds`, double-counting the offset.  
+**Solution**: Use `currentSeconds` directly as resume position since it's already absolute with `copyts=1`. See `ChannelPlayerView.attemptRecovery()` lines 569-580.
+
 ---
 
 ## Logging & Debugging
@@ -587,16 +594,17 @@ subsystem:PlexChannelsTV eventMessage:CONTAINS "404"
 
 ## Version History
 
-**v1.0** (Tasks 1-27):
+**v1.0** (Tasks 1-28):
 - ✅ PIN-based auth with server discovery
 - ✅ Channel creation from Plex libraries
 - ✅ 24/7 scheduling with Now/Next
 - ✅ Full artwork support (posters, backgrounds, logos)
-- ✅ Direct play + HLS transcode
+- ✅ Direct play + HLS transcode with adaptive bitrate
+- ✅ Smart buffer recovery (preserves playback position)
 - ✅ tvOS-native focus and interactions
 - ✅ Structured logging for diagnostics
 
 ---
 
-**Last Updated**: Task 27 (2025-10-22)  
+**Last Updated**: Task 28 (2025-10-22)  
 **Status**: MVP Complete - All core features working

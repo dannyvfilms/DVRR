@@ -565,10 +565,17 @@ private extension ChannelPlayerView {
 
         player.pause()
         let currentSeconds = player.currentTime().seconds
+        
+        // When using copyts=1, currentTime() returns absolute PTS from the original file,
+        // so we don't need to add entry.offset (which would double-count).
+        // Use currentSeconds directly as the resume position.
         var resumeOffset = entry.offset
         if currentSeconds.isFinite && currentSeconds > 1 {
-            let total = entry.offset + currentSeconds
-            resumeOffset = min(total, entry.media.duration)
+            // currentSeconds is already absolute position due to copyts=1
+            resumeOffset = min(currentSeconds, entry.media.duration)
+            AppLoggers.playback.info(
+                "event=play.recover.position itemID=\(entry.media.id, privacy: .public) originalOffsetSec=\(Int(entry.offset)) currentTimeSec=\(Int(currentSeconds)) resumeOffsetSec=\(Int(resumeOffset))"
+            )
         }
         let updatedEntry = PlaybackEntry(channel: entry.channel, index: entry.index, media: entry.media, offset: resumeOffset)
         adaptiveState.lowThroughputTriggered = false
