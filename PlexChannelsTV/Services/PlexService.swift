@@ -32,6 +32,7 @@ final class PlexService: ObservableObject {
         var preferredMaxBitrate: Int = 8_000  // Reduced from 10Mbps for better stability
         var forceTranscode: Bool = false
         var forceRemux: Bool = false
+        var forceNewSession: Bool = false  // Force new transcoder session (for recovery)
     }
 
     struct StreamPlan {
@@ -643,7 +644,8 @@ final class PlexService: ObservableObject {
                 directPlay: false,
                 maxVideoBitrate: 10_000,
                 videoCodec: nil,
-                audioCodec: nil
+                audioCodec: nil,
+                forceNewSession: false
             )
         ) else {
             AppLoggers.playback.error(
@@ -959,12 +961,17 @@ final class PlexService: ObservableObject {
         return items + additional
     }
 
-    private func streamSessionIdentifier(for media: Channel.Media) -> String {
-        streamSessionIdentifier(forItemID: media.id)
+    private func streamSessionIdentifier(for media: Channel.Media, forceNew: Bool = false) -> String {
+        streamSessionIdentifier(forItemID: media.id, forceNew: forceNew)
     }
 
-    private func streamSessionIdentifier(forItemID id: String) -> String {
-        "channels-\(clientIdentifierValue)-\(id)"
+    private func streamSessionIdentifier(forItemID id: String, forceNew: Bool = false) -> String {
+        if forceNew {
+            // Append timestamp to force new transcoder session on recovery
+            let timestamp = Int(Date().timeIntervalSince1970)
+            return "channels-\(clientIdentifierValue)-\(id)-\(timestamp)"
+        }
+        return "channels-\(clientIdentifierValue)-\(id)"
     }
 
     private func directPlayURL(for media: Channel.Media, token: String, baseURL: URL) -> URL? {
@@ -1004,7 +1011,7 @@ final class PlexService: ObservableObject {
         guard var components = URLComponents(url: url, resolvingAgainstBaseURL: true) else { return nil }
 
         var queryItems = standardQueryItems(token: token)
-        let sessionID = streamSessionIdentifier(forItemID: ratingKey)
+        let sessionID = streamSessionIdentifier(forItemID: ratingKey, forceNew: options.forceNewSession)
         queryItems.append(contentsOf: [
             .init(name: "path", value: "/library/metadata/\(ratingKey)"),
             .init(name: "offset", value: String(Int(offset))),
@@ -1169,7 +1176,8 @@ final class PlexService: ObservableObject {
             directPlay: false,
             maxVideoBitrate: maxBitrate,
             videoCodec: remux ? "copy" : "h264",
-            audioCodec: remux ? "copy" : "aac"
+            audioCodec: remux ? "copy" : "aac",
+            forceNewSession: options.forceNewSession
         )
 
         let hlsURL = try buildHLSURL(
@@ -1281,6 +1289,7 @@ final class PlexService: ObservableObject {
         let maxVideoBitrate: Int
         let videoCodec: String?
         let audioCodec: String?
+        let forceNewSession: Bool
     }
 
     private enum StreamResolutionError: Error {

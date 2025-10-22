@@ -505,6 +505,8 @@ VStack {
 
 **Expected Result**: Significantly fewer stalls, smoother playback, but slightly longer initial buffering.
 
+**Follow-up (Task 30)**: Initial improvements reduced stall frequency, but revealed Plex was still serving old bitrate segments after recovery due to session reuse. Added `forceNewSession` option to generate unique session IDs (with timestamp) on recovery, forcing Plex to start fresh transcoder with new bitrate immediately.
+
 ---
 
 ## Logging & Debugging
@@ -628,5 +630,5 @@ subsystem:PlexChannelsTV eventMessage:CONTAINS "404"
 
 ---
 
-**Last Updated**: Task 29 (2025-10-22)  
-**Status**: MVP Complete - All core features working, buffering optimized
+**Last Updated**: Task 30 (2025-10-22)  
+**Status**: MVP Complete - All core features working, buffering optimized with session management

@@ -542,6 +542,7 @@ private extension ChannelPlayerView {
         newOptions.forceTranscode = adaptiveState.forceTranscode
         newOptions.forceRemux = adaptiveState.forceTranscode ? false : plan.directStream
         newOptions.preferredMaxBitrate = adaptiveState.bitrateCap
+        newOptions.forceNewSession = true  // Force new Plex transcoder session with updated bitrate
 
         let logBitrate = adaptiveState.bitrateCap
         switch cause {
