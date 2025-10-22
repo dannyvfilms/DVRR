@@ -417,17 +417,14 @@ final class PlexService: ObservableObject {
             return nil
         }
         
-        AppLoggers.net.info("event=artwork.background itemID=\(media.id, privacy: .public) path=\(path, privacy: .public) width=\(width) height=\(height) blur=\(blur)")
-        
+        // Try transcoded URL first
         if let url = buildTranscodedArtworkURL(path: path, width: width, height: height, blur: blur, session: session) {
-            AppLoggers.net.info("event=artwork.background.success itemID=\(media.id, privacy: .public) mode=transcoded url=\(url.redactedForLogging(), privacy: .public)")
             return url
         }
         
+        // Fallback to direct URL
         let directURL = buildImageURL(from: path, width: width, height: height)
-        if let directURL {
-            AppLoggers.net.info("event=artwork.background.success itemID=\(media.id, privacy: .public) mode=direct url=\(directURL.redactedForLogging(), privacy: .public)")
-        } else {
+        if directURL == nil {
             AppLoggers.net.error("event=artwork.background.failed itemID=\(media.id, privacy: .public) path=\(path, privacy: .public)")
         }
         return directURL
@@ -443,17 +440,14 @@ final class PlexService: ObservableObject {
             return nil
         }
         
-        AppLoggers.net.info("event=artwork.poster itemID=\(media.id, privacy: .public) path=\(path, privacy: .public) width=\(width) height=\(height)")
-        
+        // Try transcoded URL first
         if let url = buildTranscodedArtworkURL(path: path, width: width, height: height, blur: nil, session: session) {
-            AppLoggers.net.info("event=artwork.poster.success itemID=\(media.id, privacy: .public) mode=transcoded url=\(url.redactedForLogging(), privacy: .public)")
             return url
         }
         
+        // Fallback to direct URL
         let directURL = buildImageURL(from: path, width: width, height: height)
-        if let directURL {
-            AppLoggers.net.info("event=artwork.poster.success itemID=\(media.id, privacy: .public) mode=direct url=\(directURL.redactedForLogging(), privacy: .public)")
-        } else {
+        if directURL == nil {
             AppLoggers.net.error("event=artwork.poster.failed itemID=\(media.id, privacy: .public) path=\(path, privacy: .public)")
         }
         return directURL
@@ -465,21 +459,18 @@ final class PlexService: ObservableObject {
             return nil
         }
         guard let path = media.logoArtworkCandidates.first else {
-            AppLoggers.net.info("event=artwork.logo itemID=\(media.id, privacy: .public) status=noCandidates (normal for items without logos)")
+            // No candidates is normal for items without logos - don't log
             return nil
         }
         
-        AppLoggers.net.info("event=artwork.logo itemID=\(media.id, privacy: .public) path=\(path, privacy: .public) width=\(width) height=\(height)")
-        
+        // Try transcoded URL first
         if let url = buildTranscodedArtworkURL(path: path, width: width, height: height, blur: nil, session: session) {
-            AppLoggers.net.info("event=artwork.logo.success itemID=\(media.id, privacy: .public) mode=transcoded url=\(url.redactedForLogging(), privacy: .public)")
             return url
         }
         
+        // Fallback to direct URL
         let directURL = buildImageURL(from: path, width: width, height: height)
-        if let directURL {
-            AppLoggers.net.info("event=artwork.logo.success itemID=\(media.id, privacy: .public) mode=direct url=\(directURL.redactedForLogging(), privacy: .public)")
-        } else {
+        if directURL == nil {
             AppLoggers.net.error("event=artwork.logo.failed itemID=\(media.id, privacy: .public) path=\(path, privacy: .public)")
         }
         return directURL
