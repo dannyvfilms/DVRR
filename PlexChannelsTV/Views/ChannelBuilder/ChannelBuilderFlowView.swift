@@ -90,11 +90,15 @@ struct ChannelBuilderFlowView: View {
                 Text("No libraries available. Connect to Plex and refresh.")
                     .foregroundStyle(.secondary)
             } else {
+                let selectedIDs = Set(viewModel.selectedLibraryRefs.map(\.id))
                 LibraryMultiPickerView(
                     libraries: viewModel.allLibraries,
-                    selectedIDs: Set(viewModel.selectedLibraryRefs.map(\.id)),
+                    selectedIDs: selectedIDs,
                     onToggle: viewModel.toggleLibrary
                 )
+                .onChange(of: viewModel.selectedLibraryRefs.count) { oldCount, newCount in
+                    AppLoggers.channel.info("event=builder.selection.changed oldCount=\(oldCount) newCount=\(newCount) isEmpty=\(viewModel.selectedLibraryRefs.isEmpty)")
+                }
             }
         }
     }
@@ -163,17 +167,22 @@ struct ChannelBuilderFlowView: View {
 
             switch viewModel.step {
             case .libraries:
+                let isDisabled = viewModel.selectedLibraryRefs.isEmpty
                 Button("Next") {
                     AppLoggers.channel.info("event=builder.next.tap step=libraries selected=\(viewModel.selectedLibraryRefs.count)")
                     viewModel.proceedFromLibraries()
                 }
                 .buttonStyle(.borderedProminent)
-                .disabled(viewModel.selectedLibraryRefs.isEmpty)
+                .disabled(isDisabled)
                 .focused($focusedButton, equals: .next)
                 .onAppear {
+                    AppLoggers.channel.info("event=builder.next.appear isDisabled=\(isDisabled) selectedCount=\(viewModel.selectedLibraryRefs.count)")
                     DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
                         focusedButton = .next
                     }
+                }
+                .onChange(of: viewModel.selectedLibraryRefs.count) { oldValue, newValue in
+                    AppLoggers.channel.info("event=builder.next.update oldCount=\(oldValue) newCount=\(newValue) isDisabled=\(newValue == 0)")
                 }
 
             case .rules(let index):

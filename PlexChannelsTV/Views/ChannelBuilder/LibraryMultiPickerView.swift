@@ -36,10 +36,13 @@ private struct LibraryCard: View {
     let isSelected: Bool
     var action: () -> Void
 
-    @State private var isFocused = false
+    @FocusState private var isFocused: Bool
 
     var body: some View {
-        Button(action: action) {
+        Button(action: {
+            AppLoggers.channel.info("event=builder.library.tap libraryID=\(library.uuid, privacy: .public) title=\(library.title ?? "unknown", privacy: .public)")
+            action()
+        }) {
             VStack(alignment: .leading, spacing: 12) {
                 HStack {
                     Image(systemName: iconName(for: library.type))
@@ -49,6 +52,7 @@ private struct LibraryCard: View {
                     if isSelected {
                         Image(systemName: "checkmark.circle.fill")
                             .foregroundColor(.accentColor)
+                            .font(.title2)
                     }
                 }
                 Text(library.title ?? "Library")
@@ -62,15 +66,10 @@ private struct LibraryCard: View {
             .frame(minHeight: 140)
             .frame(maxWidth: .infinity, alignment: .leading)
             .background(background)
-            .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
         }
-        .buttonStyle(.plain)
-        .focusableCompat { focused in
-            withAnimation(.easeInOut(duration: 0.18)) {
-                isFocused = focused
-            }
-        }
-        .scaleEffect(isFocused ? 1.05 : 1.0)
+        .buttonStyle(.card)
+        .buttonBorderShape(.roundedRectangle(radius: 18))
+        .focused($isFocused)
     }
 
     private var background: some View {
@@ -80,7 +79,6 @@ private struct LibraryCard: View {
                 RoundedRectangle(cornerRadius: 18, style: .continuous)
                     .stroke(isFocused || isSelected ? Color.accentColor : Color.clear, lineWidth: 3)
             )
-            .shadow(color: isFocused ? Color.accentColor.opacity(0.35) : .clear, radius: 14, x: 0, y: 4)
     }
 
     private func iconName(for type: PlexMediaType) -> String {
