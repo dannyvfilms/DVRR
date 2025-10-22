@@ -11,8 +11,16 @@ import PlexKit
 struct ChannelBuilderFlowView: View {
     @StateObject private var viewModel: ChannelBuilderViewModel
     @State private var isCreating = false
+    @FocusState private var focusedButton: FocusableButton?
     private let onComplete: (Channel) -> Void
     private let onCancel: () -> Void
+    
+    private enum FocusableButton: Hashable {
+        case cancel
+        case next
+        case back
+        case create
+    }
 
     init(
         plexService: PlexService,
@@ -40,7 +48,7 @@ struct ChannelBuilderFlowView: View {
             .padding(.horizontal, 80)
             .padding(.vertical, 40)
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-            .background(Color.black)
+            .background(.regularMaterial)
         }
         .alert(item: Binding(
             get: {
@@ -149,16 +157,24 @@ struct ChannelBuilderFlowView: View {
             }
             .buttonStyle(.borderless)
             .disabled(isCreating)
+            .focused($focusedButton, equals: .cancel)
 
             Spacer()
 
             switch viewModel.step {
             case .libraries:
                 Button("Next") {
+                    AppLoggers.channel.info("event=builder.next.tap step=libraries selected=\(viewModel.selectedLibraryRefs.count)")
                     viewModel.proceedFromLibraries()
                 }
                 .buttonStyle(.borderedProminent)
                 .disabled(viewModel.selectedLibraryRefs.isEmpty)
+                .focused($focusedButton, equals: .next)
+                .onAppear {
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+                        focusedButton = .next
+                    }
+                }
 
             case .rules(let index):
                 HStack(spacing: 16) {
@@ -166,11 +182,13 @@ struct ChannelBuilderFlowView: View {
                         viewModel.goBack(from: .rules(index: index))
                     }
                     .buttonStyle(.borderless)
+                    .focused($focusedButton, equals: .back)
 
                     Button(index == viewModel.selectedLibraryRefs.count - 1 ? "Next" : "Next") {
                         viewModel.goToNextRulesStep(currentIndex: index)
                     }
                     .buttonStyle(.borderedProminent)
+                    .focused($focusedButton, equals: .next)
                 }
 
             case .sort:
@@ -179,11 +197,13 @@ struct ChannelBuilderFlowView: View {
                         viewModel.goBack(from: .sort)
                     }
                     .buttonStyle(.borderless)
+                    .focused($focusedButton, equals: .back)
 
                     Button("Next") {
                         viewModel.advanceFromSort()
                     }
                     .buttonStyle(.borderedProminent)
+                    .focused($focusedButton, equals: .next)
                 }
 
             case .review:
@@ -193,6 +213,7 @@ struct ChannelBuilderFlowView: View {
                     }
                     .buttonStyle(.borderless)
                     .disabled(isCreating)
+                    .focused($focusedButton, equals: .back)
 
                     if isCreating {
                         ProgressView("Creating…")
@@ -206,6 +227,7 @@ struct ChannelBuilderFlowView: View {
                         }
                         .buttonStyle(.borderedProminent)
                         .disabled(viewModel.draft.selectedLibraries.isEmpty)
+                        .focused($focusedButton, equals: .create)
                     }
                 }
             }

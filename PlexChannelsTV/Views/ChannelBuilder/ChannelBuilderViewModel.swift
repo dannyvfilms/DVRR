@@ -62,8 +62,11 @@ final class ChannelBuilderViewModel: ObservableObject {
 
     func toggleLibrary(_ library: PlexLibrary) {
         let normalized = normalizedType(for: library.type)
+        
+        AppLoggers.channel.info("event=builder.toggleLibrary libraryID=\(library.uuid, privacy: .public) libraryTitle=\(library.title ?? "unknown", privacy: .public) type=\(normalized.rawValue, privacy: .public)")
 
         if draft.selectedLibraries.contains(where: { $0.id == library.uuid }) {
+            AppLoggers.channel.info("event=builder.toggleLibrary.remove libraryID=\(library.uuid, privacy: .public)")
             draft.selectedLibraries.removeAll { $0.id == library.uuid }
             draft.removeSpec(for: library.uuid)
             counts[library.uuid] = nil
@@ -75,6 +78,7 @@ final class ChannelBuilderViewModel: ObservableObject {
         }
 
         if let allowedType, allowedType != normalized {
+            AppLoggers.channel.warning("event=builder.toggleLibrary.blocked reason=typeMismatch allowedType=\(allowedType.rawValue, privacy: .public) attemptedType=\(normalized.rawValue, privacy: .public)")
             errorMessage = "You can only mix libraries of the same media type."
             return
         }
@@ -90,6 +94,8 @@ final class ChannelBuilderViewModel: ObservableObject {
 
         draft.selectedLibraries.append(ref)
         draft.ensureSpecs()
+        
+        AppLoggers.channel.info("event=builder.toggleLibrary.add libraryID=\(library.uuid, privacy: .public) totalSelected=\(draft.selectedLibraries.count)")
 
         if draft.selectedLibraries.count == 1 {
             draft.sort = sortCatalog.defaultDescriptor(for: library)
@@ -99,8 +105,13 @@ final class ChannelBuilderViewModel: ObservableObject {
     }
 
     func proceedFromLibraries() {
+        AppLoggers.channel.info("event=builder.proceedFromLibraries selectedCount=\(draft.selectedLibraries.count)")
         draft.ensureSpecs()
-        guard !draft.selectedLibraries.isEmpty else { return }
+        guard !draft.selectedLibraries.isEmpty else {
+            AppLoggers.channel.warning("event=builder.proceedFromLibraries.blocked reason=noLibrariesSelected")
+            return
+        }
+        AppLoggers.channel.info("event=builder.proceedFromLibraries.advancing toRulesIndex=0")
         step = .rules(index: 0)
         preloadCountIfNeeded(forIndex: 0)
     }
