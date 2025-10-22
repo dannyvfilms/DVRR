@@ -155,72 +155,71 @@ struct ChannelBuilderFlowView: View {
 
     @ViewBuilder
     private var footer: some View {
-        HStack(spacing: 20) {
+        HStack(spacing: 24) {
+            // Cancel button - left aligned with visible border
             Button("Cancel") {
                 onCancel()
             }
-            .buttonStyle(.borderless)
+            .buttonStyle(.bordered)
             .disabled(isCreating)
             .focused($focusedButton, equals: .cancel)
 
-            Spacer()
+            Spacer(minLength: 40)
 
-            switch viewModel.step {
-            case .libraries:
-                let isDisabled = viewModel.selectedLibraryRefs.isEmpty
-                Button("Next") {
-                    AppLoggers.channel.info("event=builder.next.tap step=libraries selected=\(viewModel.selectedLibraryRefs.count)")
-                    viewModel.proceedFromLibraries()
-                }
-                .buttonStyle(.borderedProminent)
-                .disabled(isDisabled)
-                .focused($focusedButton, equals: .next)
-                .onAppear {
-                    AppLoggers.channel.info("event=builder.next.appear isDisabled=\(isDisabled) selectedCount=\(viewModel.selectedLibraryRefs.count)")
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
-                        focusedButton = .next
-                    }
-                }
-                .onChange(of: viewModel.selectedLibraryRefs.count) { oldValue, newValue in
-                    AppLoggers.channel.info("event=builder.next.update oldCount=\(oldValue) newCount=\(newValue) isDisabled=\(newValue == 0)")
-                }
-
-            case .rules(let index):
-                HStack(spacing: 16) {
-                    Button("Back") {
-                        viewModel.goBack(from: .rules(index: index))
-                    }
-                    .buttonStyle(.borderless)
-                    .focused($focusedButton, equals: .back)
-
-                    Button(index == viewModel.selectedLibraryRefs.count - 1 ? "Next" : "Next") {
-                        viewModel.goToNextRulesStep(currentIndex: index)
+            // Navigation buttons - right aligned with spacing to prevent overlap
+            HStack(spacing: 24) {
+                switch viewModel.step {
+                case .libraries:
+                    let isDisabled = viewModel.selectedLibraryRefs.isEmpty
+                    Button("Next") {
+                        AppLoggers.channel.info("event=builder.next.tap step=libraries selected=\(viewModel.selectedLibraryRefs.count)")
+                        viewModel.proceedFromLibraries()
                     }
                     .buttonStyle(.borderedProminent)
+                    .disabled(isDisabled)
                     .focused($focusedButton, equals: .next)
-                }
-
-            case .sort:
-                HStack(spacing: 16) {
-                    Button("Back") {
-                        viewModel.goBack(from: .sort)
+                    .onAppear {
+                        AppLoggers.channel.info("event=builder.next.appear isDisabled=\(isDisabled) selectedCount=\(viewModel.selectedLibraryRefs.count)")
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+                            focusedButton = .next
+                        }
                     }
-                    .buttonStyle(.borderless)
+                    .onChange(of: viewModel.selectedLibraryRefs.count) { oldValue, newValue in
+                        AppLoggers.channel.info("event=builder.next.update oldCount=\(oldValue) newCount=\(newValue) isDisabled=\(newValue == 0)")
+                    }
+
+                case .rules, .sort:
+                    Button("Back") {
+                        switch viewModel.step {
+                        case .rules(let index):
+                            viewModel.goBack(from: .rules(index: index))
+                        case .sort:
+                            viewModel.goBack(from: .sort)
+                        default:
+                            break
+                        }
+                    }
+                    .buttonStyle(.bordered)
                     .focused($focusedButton, equals: .back)
 
                     Button("Next") {
-                        viewModel.advanceFromSort()
+                        switch viewModel.step {
+                        case .rules(let index):
+                            viewModel.goToNextRulesStep(currentIndex: index)
+                        case .sort:
+                            viewModel.advanceFromSort()
+                        default:
+                            break
+                        }
                     }
                     .buttonStyle(.borderedProminent)
                     .focused($focusedButton, equals: .next)
-                }
 
-            case .review:
-                HStack(spacing: 16) {
+                case .review:
                     Button("Back") {
                         viewModel.goBack(from: .review)
                     }
-                    .buttonStyle(.borderless)
+                    .buttonStyle(.bordered)
                     .disabled(isCreating)
                     .focused($focusedButton, equals: .back)
 

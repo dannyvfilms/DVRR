@@ -12,31 +12,111 @@ struct SortPickerView: View {
     let availableKeys: [SortDescriptor.SortKey]
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 24) {
+        VStack(alignment: .leading, spacing: 28) {
             Text("Step 3 · Sort")
                 .font(.title2.bold())
 
-            Picker("Sort By", selection: $descriptor.key) {
-                ForEach(availableKeys, id: \.self) { key in
-                    Text(key.displayName).tag(key)
+            VStack(alignment: .leading, spacing: 20) {
+                // Sort By dropdown
+                HStack(spacing: 16) {
+                    Text("Sort By")
+                        .font(.callout.weight(.medium))
+                        .foregroundStyle(.secondary)
+                        .frame(width: 100, alignment: .leading)
+                    
+                    Menu {
+                        ForEach(availableKeys, id: \.self) { key in
+                            Button {
+                                descriptor.key = key
+                            } label: {
+                                HStack {
+                                    Text(key.displayName)
+                                    if descriptor.key == key {
+                                        Image(systemName: "checkmark")
+                                    }
+                                }
+                            }
+                        }
+                    } label: {
+                        HStack {
+                            Text(descriptor.key.displayName)
+                                .lineLimit(1)
+                            Spacer()
+                            Image(systemName: "chevron.down")
+                                .imageScale(.small)
+                        }
+                        .frame(width: 320, alignment: .leading)
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 12)
+                        .background(
+                            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                                .fill(Color.white.opacity(0.12))
+                        )
+                    }
+                    .buttonStyle(.plain)
                 }
-            }
-            .pickerStyle(.inline)
-            .frame(maxWidth: 420)
-
-            if descriptor.key.supportsAscending {
-                Picker("Order", selection: $descriptor.order) {
-                    Text(SortDescriptor.Order.ascending.displayName).tag(SortDescriptor.Order.ascending)
-                    Text(SortDescriptor.Order.descending.displayName).tag(SortDescriptor.Order.descending)
+                
+                // Order dropdown (only for non-random)
+                if descriptor.key.supportsAscending {
+                    HStack(spacing: 16) {
+                        Text("Order")
+                            .font(.callout.weight(.medium))
+                            .foregroundStyle(.secondary)
+                            .frame(width: 100, alignment: .leading)
+                        
+                        Menu {
+                            Button {
+                                descriptor.order = .ascending
+                            } label: {
+                                HStack {
+                                    Text(SortDescriptor.Order.ascending.displayName)
+                                    if descriptor.order == .ascending {
+                                        Image(systemName: "checkmark")
+                                    }
+                                }
+                            }
+                            Button {
+                                descriptor.order = .descending
+                            } label: {
+                                HStack {
+                                    Text(SortDescriptor.Order.descending.displayName)
+                                    if descriptor.order == .descending {
+                                        Image(systemName: "checkmark")
+                                    }
+                                }
+                            }
+                        } label: {
+                            HStack {
+                                Text(descriptor.order.displayName)
+                                    .lineLimit(1)
+                                Spacer()
+                                Image(systemName: "chevron.down")
+                                    .imageScale(.small)
+                            }
+                            .frame(width: 320, alignment: .leading)
+                            .padding(.horizontal, 16)
+                            .padding(.vertical, 12)
+                            .background(
+                                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                                    .fill(Color.white.opacity(0.12))
+                            )
+                        }
+                        .buttonStyle(.plain)
+                    }
+                } else {
+                    HStack(spacing: 16) {
+                        Text("Order")
+                            .font(.callout.weight(.medium))
+                            .foregroundStyle(.secondary)
+                            .frame(width: 100, alignment: .leading)
+                        
+                        Text("Random order selected")
+                            .font(.callout)
+                            .foregroundStyle(.secondary)
+                    }
                 }
-                .pickerStyle(.segmented)
-                .frame(maxWidth: 360)
-            } else {
-                Text("Random order selected")
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
             }
         }
-        .padding(.vertical, 32)
+        .padding(.vertical, 20)
     }
 }

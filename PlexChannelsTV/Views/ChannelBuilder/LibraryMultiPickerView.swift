@@ -63,13 +63,16 @@ private struct LibraryCard: View {
                     .foregroundStyle(.secondary)
             }
             .padding(20)
-            .frame(minHeight: 140)
+            .frame(minHeight: 140, maxHeight: 140)
             .frame(maxWidth: .infinity, alignment: .leading)
             .background(background)
         }
-        .buttonStyle(.card)
+        .buttonStyle(.plain)
         .buttonBorderShape(.roundedRectangle(radius: 18))
         .focused($isFocused)
+        .scaleEffect(isFocused ? 1.03 : 1.0)  // Smaller scale to prevent overlap
+        .animation(.easeInOut(duration: 0.15), value: isFocused)
+        .zIndex(isFocused ? 1 : 0)  // Bring focused card forward
     }
 
     private var background: some View {
@@ -79,6 +82,7 @@ private struct LibraryCard: View {
                 RoundedRectangle(cornerRadius: 18, style: .continuous)
                     .stroke(isFocused || isSelected ? Color.accentColor : Color.clear, lineWidth: 3)
             )
+            .shadow(color: isFocused ? Color.accentColor.opacity(0.35) : .clear, radius: 12, x: 0, y: 4)
     }
 
     private func iconName(for type: PlexMediaType) -> String {

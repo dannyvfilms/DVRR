@@ -68,7 +68,8 @@ private struct GroupEditor: View {
     let filterCatalog: PlexFilterCatalog
     var onGroupChange: (FilterGroup) -> Void
 
-    private let spacing: CGFloat = 18
+    private let spacing: CGFloat = 20
+    private let indent: CGFloat = 40
 
     var body: some View {
         VStack(alignment: .leading, spacing: spacing) {
@@ -105,9 +106,9 @@ private struct GroupEditor: View {
                 .buttonStyle(.bordered)
                 .tint(.secondary)
             }
-            .padding(.leading, CGFloat(level) * 12)
+            .padding(.leading, CGFloat(level) * indent)
 
-            // Rules
+            // Rules - full width with indent
             ForEach($group.rules) { $rule in
                 FilterRuleEditor(
                     rule: $rule,
@@ -123,10 +124,10 @@ private struct GroupEditor: View {
                         }
                     }
                 )
-                .padding(.leading, CGFloat(level) * 12)
+                .padding(.leading, CGFloat(level) * indent)
             }
 
-            // Nested groups
+            // Nested groups with background
             ForEach($group.groups) { $subgroup in
                 VStack(alignment: .leading, spacing: spacing) {
                     GroupEditor(
@@ -153,21 +154,26 @@ private struct GroupEditor: View {
                             .font(.callout)
                     }
                     .buttonStyle(.borderless)
-                    .padding(.leading, CGFloat(level + 1) * 12)
+                    .padding(.leading, CGFloat(level + 1) * indent)
                 }
                 .padding(.top, spacing)
                 .padding(16)
+                .padding(.leading, CGFloat(level) * indent)
                 .background(
                     RoundedRectangle(cornerRadius: 12, style: .continuous)
                         .fill(Color.white.opacity(0.05))
                 )
             }
         }
-        .padding(20)
-        .background(
-            RoundedRectangle(cornerRadius: 18, style: .continuous)
-                .fill(Color.white.opacity(0.06))
-        )
+        // Only add background/padding for nested groups (level > 0)
+        .if(level > 0) { view in
+            view
+                .padding(20)
+                .background(
+                    RoundedRectangle(cornerRadius: 18, style: .continuous)
+                        .fill(Color.white.opacity(0.06))
+                )
+        }
     }
     
     private func addFilter() {
@@ -560,5 +566,17 @@ private struct CountBadge: View {
             return state.approximate ? "~\(total)" : "\(total) items"
         }
         return state.isLoading ? "Counting…" : "—"
+    }
+}
+
+// View extension for conditional modifiers
+private extension View {
+    @ViewBuilder
+    func `if`<Content: View>(_ condition: Bool, transform: (Self) -> Content) -> some View {
+        if condition {
+            transform(self)
+        } else {
+            self
+        }
     }
 }
