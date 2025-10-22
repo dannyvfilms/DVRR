@@ -15,7 +15,10 @@ Native **tvOS 17+** SwiftUI app that creates **fake "live TV" channels** from a 
 - ✅ **Server fallback** - tries multiple connection URLs if one fails
 
 ### Channel System
-- ✅ **Default seeded channels** - Auto-creates 4 channels on first run
+- ✅ **Advanced channel builder** - Plex-style filter wizard with multi-library support
+- ✅ **Nested filter rules** - Match All/Any groups with arbitrary nesting
+- ✅ **Live item counts** - Debounced real-time counts as filters change
+- ✅ **Smart sorting** - Title, year, date added, rating, random, and more
 - ✅ **Persistent storage** - Channels saved to disk (Documents/channels.json)
 - ✅ **Scheduling algorithm** - Modular arithmetic for 24/7 loops
 - ✅ **Now/Next computation** - Shows current item + upcoming with countdown
@@ -88,6 +91,31 @@ Native **tvOS 17+** SwiftUI app that creates **fake "live TV" channels** from a 
 
 **Pattern**: `CachedAsyncImage` wrapper that checks cache before network fetch.
 
+#### `PlexFilterCatalog` (Channel Builder)
+**Purpose**: Provides available filter fields and enum values for a given library  
+**Key Methods**:
+- `availableFields(for: PlexLibrary)` - Returns filterable fields based on library type
+- `options(for: FilterField, library: PlexLibrary)` - Fetches enum values (genres, labels, collections, etc.)
+
+**Pattern**: Fetches from Plex's filters/sorts endpoint when available, otherwise derives from cached metadata.
+
+#### `PlexQueryBuilder` (Channel Builder)
+**Purpose**: Translates filter rules into Plex API queries or client-side filtering  
+**Key Methods**:
+- `buildChannelMedia(library:using:sort:limit:)` - Executes filter group and returns matching media
+- `count(library:using:)` - Returns count of items matching filters (for live count badge)
+
+**Pattern**: Translates `FilterGroup` → server-side query where possible; falls back to client-side filtering when needed. Handles nested groups with Match All/Any logic.
+
+#### `PlexSortCatalog` (Channel Builder)
+**Purpose**: Provides available sort options for library types  
+**Key Methods**:
+- `availableSorts(for: PlexLibrary)` - Returns list of valid sort keys for library type
+
+**Supported Sorts**:
+- **Movies**: title, year, originallyAvailableAt, rating, audienceRating, contentRating, addedAt, lastViewedAt, random
+- **TV Episodes**: title, grandparentTitle (show), originallyAvailableAt, addedAt, lastViewedAt, viewCount, random
+
 ### Data Models
 
 #### `Channel`
@@ -127,6 +155,38 @@ struct Media {
 - **Logo**: `/library/metadata/{id}/clearLogo` → `grandparentTheme` → `theme`
 
 **Why clearLogo first**: Plex stores movie logos at predictable path, so we try it first even though it's not in metadata.
+
+#### Channel Builder Models (`Models/Filters/`)
+
+**`FilterOperator`**: Enum defining comparison operators
+- String ops: `.contains`, `.notContains`, `.is`, `.isNot`, `.beginsWith`, `.endsWith`
+- Numeric ops: `.equals`, `.notEquals`, `.lt`, `.lte`, `.gt`, `.gte`
+- Date ops: `.before`, `.on`, `.after`
+- Boolean ops: `.is` / `.isNot`
+
+**`FilterField`**: Typed enum with metadata for each filterable field
+- `valueKind`: `.text`, `.number`, `.date`, `.enumMulti`, `.enumSingle`, `.boolean`
+- `appliesTo`: `.movie`, `.show`, `.episode` (determines which library types support this field)
+
+**`FilterRule`**: Single comparison `{ field, op, value }`
+
+**`FilterGroup`**: Nested logic container
+- `mode`: `.all` (AND) or `.any` (OR)
+- `rules`: Array of `FilterRule`
+- `groups`: Array of nested `FilterGroup` (supports arbitrary nesting)
+
+**`LibraryFilterSpec`**: Associates library with its filter group
+- `libraryID`: UUID of library
+- `rootGroup`: Top-level `FilterGroup` for this library
+
+**`ChannelDraft`**: Intermediate state during channel building
+- `name`: User-provided or auto-generated
+- `selectedLibraries`: Array of `LibraryRef` (id, key, title, type)
+- `perLibrarySpecs`: Array of `LibraryFilterSpec` (one per selected library)
+- `sort`: `SortDescriptor` (key + order)
+- `options`: `{ shuffle: Bool }`
+
+**`SortDescriptor`**: `{ key: SortKey, order: .asc | .desc }`
 
 ### Views
 
@@ -181,6 +241,51 @@ Button { action } label: {
 - Watchdog timer (5s) to detect coordinator issues
 - Error handling with retry logic
 - Logging for diagnostics (`event=play.*`)
+
+#### Channel Builder Views (`Views/ChannelBuilder/`)
+
+**`ChannelBuilderFlowView`** (Main Wizard)
+- **Presentation**: Full-screen cover with opaque black background
+- **Steps**: Libraries → Rules (per library) → Sort → Review
+- **Navigation**: "Back" / "Next" / "Create Channel" buttons in footer
+- **Important**: Must use `.background(Color.black)` (not transparent) to hide channels view behind it
+
+**`LibraryMultiPickerView`** (Step 1)
+- Grid of library cards with checkmarks for selection
+- Only libraries with same media type can be combined
+- Cards show icon, title, and type with focus effects
+
+**`RuleGroupBuilderView`** (Step 2)
+- One instance per selected library
+- Header shows "Step 2 · Rules (X of Y)" with live item count badge
+- Top row: "Match All" / "Match Any" segmented control
+- Rule list: Each row has Field ▾, Operator ▾, Value editor
+- Value editor adapts to field type:
+  - Text: TextField
+  - Number: TextField with numeric keyboard
+  - Date: DateValuePicker with quick picks (last 7/30/90 days)
+  - Enum (multi): Token field with chips
+  - Boolean: Toggle
+- Actions: "Add Filter" button, "Add Group" button (for nested logic)
+- Live count debounced (250-400ms) to avoid excessive API calls
+
+**`SortPickerView`** (Step 3)
+- List of available sorts for the primary library type
+- ASC/DESC toggle where applicable
+- Defaults: Movies → Title (ASC), TV → Episode Air Date (DESC)
+
+**`ChannelBuilderReviewView`** (Step 4)
+- Shows draft name (editable TextField)
+- Summary: libraries selected, total items estimate
+- Per-library rule counts
+- "Create Channel" button triggers compilation
+
+**Channel Compilation Process**:
+1. For each library, execute filter group via `PlexQueryBuilder.buildChannelMedia()`
+2. Union all media IDs, dedupe by `media.id`
+3. Apply sort (or shuffle if random/shuffle enabled)
+4. Create `Channel` with `provenance: .filters(draft)` and persist
+5. Return focus to new channel card on main screen
 
 ---
 
@@ -280,6 +385,37 @@ Button { } label: { }
 ```
 
 **Why**: Centralized focus state prevents conflicts and enables programmatic focus changes.
+
+### 6. Full-Screen Modal Backgrounds
+
+**The Problem**: When presenting full-screen covers (like Channel Builder), transparent backgrounds cause underlying views to show through, creating visual confusion and text intermingling.
+
+**❌ WRONG** (causes text overlap):
+```swift
+var body: some View {
+    VStack {
+        content
+    }
+    .background(Color.black.opacity(0.001))  // ← Nearly transparent!
+}
+```
+
+**✅ RIGHT**:
+```swift
+var body: some View {
+    VStack {
+        content
+    }
+    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+    .background(Color.black)  // ← Opaque background
+}
+```
+
+**Why**: 
+- `.fullScreenCover` doesn't automatically provide an opaque backdrop on tvOS
+- Must explicitly set opaque background to hide the view beneath
+- `.frame(maxWidth: .infinity, maxHeight: .infinity)` ensures background fills entire screen
+- Applies to: `ChannelBuilderFlowView`, any custom modal presentations
 
 ---
 
@@ -561,6 +697,17 @@ event=image.load status=200 bytes=45123 url=...
 event=image.load status=success url=...
 ```
 
+**Channel Builder**:
+```
+event=builder.view.show step=libraries
+event=builder.rules.change libraryID=XXX field=genre op=contains
+event=builder.count.start libraryID=XXX
+event=builder.count.ok libraryID=XXX elapsedMs=234 remote=true total=42
+event=builder.compile.start libraryCount=2 sort=title
+event=builder.compile.ok perLibCounts=lib1:50,lib2:30 total=80 elapsedMs=1523
+event=builder.persist.ok channelID=XXX itemCount=80
+```
+
 ### Console.app Filtering
 
 **Quick Filters**:
@@ -576,11 +723,13 @@ subsystem:PlexChannelsTV eventMessage:CONTAINS "404"
 ## Future Considerations
 
 ### Potential Features
-- [ ] Edit existing channels (currently can only add/remove)
+- [ ] Edit existing channels (re-open in builder with current filters)
 - [ ] Custom channel artwork/branding
 - [ ] Multiple server support (currently one server per session)
 - [ ] TV show episode progression (watch next episode, not random)
 - [ ] Time-based programming (holiday movies in December)
+- [ ] Save/load filter presets
+- [ ] Channel templates (e.g., "90s Action", "Family Friendly Comedy")
 
 ### Technical Debt
 - [ ] Error handling in `ChannelSeeder` is overly broad (`catch { }`)
@@ -617,7 +766,7 @@ subsystem:PlexChannelsTV eventMessage:CONTAINS "404"
 
 ## Version History
 
-**v1.0** (Tasks 1-29):
+**v1.0** (Tasks 1-30):
 - ✅ PIN-based auth with server discovery
 - ✅ Channel creation from Plex libraries
 - ✅ 24/7 scheduling with Now/Next
@@ -628,7 +777,20 @@ subsystem:PlexChannelsTV eventMessage:CONTAINS "404"
 - ✅ tvOS-native focus and interactions
 - ✅ Structured logging for diagnostics
 
+**v1.1** (Task 31 - Channel Builder):
+- ✅ **Plex-style Advanced Filters** - Full wizard with multi-step flow
+- ✅ **Multi-library support** - Select multiple libraries with same media type
+- ✅ **Nested filter rules** - Match All/Any groups with arbitrary nesting depth
+- ✅ **Rich filter operators** - String, numeric, date, enum, boolean comparisons
+- ✅ **Live item counts** - Debounced real-time count updates as rules change
+- ✅ **Smart sorting** - Title, year, date added, rating, random, custom per type
+- ✅ **Channel compilation** - Query builder with server-side + client-side filtering
+- ✅ **Full-screen modal** - Fixed opaque background to prevent text intermingling
+- ✅ **New services**: `PlexFilterCatalog`, `PlexQueryBuilder`, `PlexSortCatalog`
+- ✅ **New models**: `FilterGroup`, `FilterRule`, `FilterOperator`, `FilterField`, `ChannelDraft`
+- ✅ **New views**: `ChannelBuilderFlowView`, `LibraryMultiPickerView`, `RuleGroupBuilderView`, `SortPickerView`
+
 ---
 
-**Last Updated**: Task 30 (2025-10-22)  
-**Status**: MVP Complete - All core features working, buffering optimized with session management
+**Last Updated**: Task 31 (2025-10-22)  
+**Status**: Channel Builder Complete - Advanced filtering with Plex-style wizard, all features working

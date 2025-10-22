@@ -9,6 +9,39 @@ import Foundation
 import PlexKit
 
 struct Channel: Identifiable, Codable, Hashable {
+    struct SourceLibrary: Codable, Hashable {
+        var id: String?
+        var key: String
+        var title: String?
+        var type: PlexMediaType
+
+        init(
+            id: String? = nil,
+            key: String,
+            title: String? = nil,
+            type: PlexMediaType
+        ) {
+            self.id = id
+            self.key = key
+            self.title = title
+            self.type = type
+        }
+    }
+
+    struct Options: Codable, Hashable {
+        var shuffle: Bool
+
+        init(shuffle: Bool = false) {
+            self.shuffle = shuffle
+        }
+    }
+
+    enum Provenance: Hashable {
+        case library(key: String)
+        case seed(identifier: String)
+        case filters(ChannelDraft)
+    }
+
     struct Media: Identifiable, Codable, Hashable {
         let id: String
         let title: String
@@ -38,6 +71,13 @@ struct Channel: Identifiable, Codable, Hashable {
             let addedAt: Date?
             let type: PlexMediaType?
             let guid: String?
+            let originallyAvailableAt: Date?
+            let lastViewedAt: Date?
+            let viewCount: Int?
+            let contentRating: String?
+            let grandparentTitle: String?
+            let rating: Double?
+            let audienceRating: Double?
         }
 
         struct Artwork: Codable, Hashable {
@@ -125,6 +165,19 @@ struct Channel: Identifiable, Codable, Hashable {
         }
     }
 
+    private enum CodingKeys: String, CodingKey {
+        case id
+        case name
+        case libraryKey
+        case libraryType
+        case createdAt
+        case scheduleAnchor
+        case items
+        case sourceLibraries
+        case options
+        case provenance
+    }
+
     let id: UUID
     let name: String
     let libraryKey: String
@@ -133,6 +186,9 @@ struct Channel: Identifiable, Codable, Hashable {
     /// Reference point for the start of the playlist loop.
     let scheduleAnchor: Date
     let items: [Media]
+    let sourceLibraries: [SourceLibrary]
+    let options: Options
+    let provenance: Provenance
 
     init(
         id: UUID = UUID(),
@@ -141,7 +197,10 @@ struct Channel: Identifiable, Codable, Hashable {
         libraryType: PlexMediaType,
         createdAt: Date = Date(),
         scheduleAnchor: Date = Date(),
-        items: [Media]
+        items: [Media],
+        sourceLibraries: [SourceLibrary]? = nil,
+        options: Options = Options(),
+        provenance: Provenance? = nil
     ) {
         self.id = id
         self.name = name
@@ -150,6 +209,76 @@ struct Channel: Identifiable, Codable, Hashable {
         self.createdAt = createdAt
         self.scheduleAnchor = scheduleAnchor
         self.items = items
+        if let sourceLibraries, !sourceLibraries.isEmpty {
+            self.sourceLibraries = sourceLibraries
+        } else {
+            self.sourceLibraries = [
+                SourceLibrary(
+                    id: nil,
+                    key: libraryKey,
+                    title: nil,
+                    type: libraryType
+                )
+            ]
+        }
+        self.options = options
+        if let provenance {
+            self.provenance = provenance
+        } else {
+            self.provenance = .library(key: libraryKey)
+        }
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(UUID.self, forKey: .id)
+        name = try container.decode(String.self, forKey: .name)
+        libraryKey = try container.decode(String.self, forKey: .libraryKey)
+        libraryType = try container.decode(PlexMediaType.self, forKey: .libraryType)
+        createdAt = try container.decodeIfPresent(Date.self, forKey: .createdAt) ?? Date()
+        scheduleAnchor = try container.decode(Date.self, forKey: .scheduleAnchor)
+        items = try container.decode([Media].self, forKey: .items)
+        if let decodedSources = try container.decodeIfPresent([SourceLibrary].self, forKey: .sourceLibraries),
+           !decodedSources.isEmpty {
+            sourceLibraries = decodedSources
+        } else {
+            sourceLibraries = [
+                SourceLibrary(
+                    id: nil,
+                    key: libraryKey,
+                    title: nil,
+                    type: libraryType
+                )
+            ]
+        }
+        options = try container.decodeIfPresent(Options.self, forKey: .options) ?? Options()
+        provenance = try container.decodeIfPresent(Provenance.self, forKey: .provenance) ?? .library(key: libraryKey)
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(id, forKey: .id)
+        try container.encode(name, forKey: .name)
+        try container.encode(libraryKey, forKey: .libraryKey)
+        try container.encode(libraryType, forKey: .libraryType)
+        try container.encode(createdAt, forKey: .createdAt)
+        try container.encode(scheduleAnchor, forKey: .scheduleAnchor)
+        try container.encode(items, forKey: .items)
+        if !sourceLibraries.isEmpty {
+            try container.encode(sourceLibraries, forKey: .sourceLibraries)
+        }
+        if options.shuffle {
+            try container.encode(options, forKey: .options)
+        }
+        try container.encode(provenance, forKey: .provenance)
+    }
+
+    var primaryLibrary: SourceLibrary? {
+        sourceLibraries.first
+    }
+
+    var primaryLibraryType: PlexMediaType {
+        primaryLibrary?.type ?? libraryType
     }
 
     var totalDuration: TimeInterval {
@@ -226,7 +355,14 @@ extension Channel.Media {
                 genres: item.genres.map { $0.tag },
                 addedAt: item.addedAt,
                 type: item.type,
-                guid: item.guid
+                guid: item.guid,
+                originallyAvailableAt: item.originallyReleasedAt,
+                lastViewedAt: item.lastViewedAt,
+                viewCount: item.viewCount,
+                contentRating: item.contentRating,
+                grandparentTitle: item.grandparentTitle,
+                rating: item.rating,
+                audienceRating: item.userRating
             ),
             artwork: Channel.Media.Artwork(
                 thumb: item.thumb,
@@ -268,5 +404,129 @@ extension Channel.Media {
             artwork.grandparentTheme,
             artwork.theme
         ].compactMap { $0 }
+    }
+}
+
+extension Array where Element == Channel.Media {
+    func sorted(using descriptor: SortDescriptor) -> [Channel.Media] {
+        guard descriptor.key != .random else { return self }
+        return sorted { lhs, rhs in
+            compare(lhs: lhs, rhs: rhs, key: descriptor.key, order: descriptor.order)
+        }
+    }
+
+    private func compare(
+        lhs: Channel.Media,
+        rhs: Channel.Media,
+        key: SortDescriptor.SortKey,
+        order: SortDescriptor.Order
+    ) -> Bool {
+        let ascending = order == .ascending
+
+        switch key {
+        case .title:
+            let left = lhs.metadata?.title ?? lhs.title
+            let right = rhs.metadata?.title ?? rhs.title
+            return ascending ? left.localizedCaseInsensitiveCompare(right) == .orderedAscending : left.localizedCaseInsensitiveCompare(right) == .orderedDescending
+
+        case .showTitle:
+            let left = lhs.metadata?.grandparentTitle ?? lhs.metadata?.title ?? lhs.title
+            let right = rhs.metadata?.grandparentTitle ?? rhs.metadata?.title ?? rhs.title
+            return ascending ? left.localizedCaseInsensitiveCompare(right) == .orderedAscending : left.localizedCaseInsensitiveCompare(right) == .orderedDescending
+
+        case .year:
+            let left = lhs.metadata?.year ?? 0
+            let right = rhs.metadata?.year ?? 0
+            return ascending ? left < right : left > right
+
+        case .originallyAvailableAt, .episodeAirDate:
+            let left = lhs.metadata?.originallyAvailableAt ?? lhs.metadata?.addedAt ?? .distantPast
+            let right = rhs.metadata?.originallyAvailableAt ?? rhs.metadata?.addedAt ?? .distantPast
+            return ascending ? left < right : left > right
+
+        case .rating, .criticRating:
+            let left = lhs.metadata?.rating ?? 0
+            let right = rhs.metadata?.rating ?? 0
+            return ascending ? left < right : left > right
+
+        case .audienceRating:
+            let left = lhs.metadata?.audienceRating ?? 0
+            let right = rhs.metadata?.audienceRating ?? 0
+            return ascending ? left < right : left > right
+
+        case .contentRating:
+            let left = lhs.metadata?.contentRating ?? ""
+            let right = rhs.metadata?.contentRating ?? ""
+            return ascending ? left.localizedCaseInsensitiveCompare(right) == .orderedAscending : left.localizedCaseInsensitiveCompare(right) == .orderedDescending
+
+        case .addedAt:
+            let left = lhs.metadata?.addedAt ?? .distantPast
+            let right = rhs.metadata?.addedAt ?? .distantPast
+            return ascending ? left < right : left > right
+
+        case .lastViewedAt:
+            let left = lhs.metadata?.lastViewedAt ?? .distantPast
+            let right = rhs.metadata?.lastViewedAt ?? .distantPast
+            return ascending ? left < right : left > right
+
+        case .viewCount:
+            let left = lhs.metadata?.viewCount ?? 0
+            let right = rhs.metadata?.viewCount ?? 0
+            return ascending ? left < right : left > right
+
+        case .unviewed:
+            let left = (lhs.metadata?.viewCount ?? 0) == 0 ? 1 : 0
+            let right = (rhs.metadata?.viewCount ?? 0) == 0 ? 1 : 0
+            return ascending ? left < right : left > right
+
+        case .random:
+            return false
+        }
+    }
+}
+
+extension Channel.Provenance: Codable {
+    private enum CodingKeys: String, CodingKey {
+        case kind
+        case libraryKey
+        case identifier
+        case draft
+    }
+
+    private enum Kind: String, Codable {
+        case library
+        case seed
+        case filters
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let kind = try container.decode(Kind.self, forKey: .kind)
+        switch kind {
+        case .library:
+            let key = try container.decode(String.self, forKey: .libraryKey)
+            self = .library(key: key)
+        case .seed:
+            let identifier = try container.decode(String.self, forKey: .identifier)
+            self = .seed(identifier: identifier)
+        case .filters:
+            let draft = try container.decode(ChannelDraft.self, forKey: .draft)
+            self = .filters(draft)
+        }
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        switch self {
+        case .library(let key):
+            try container.encode(Kind.library, forKey: .kind)
+            try container.encode(key, forKey: .libraryKey)
+        case .seed(let identifier):
+            try container.encode(Kind.seed, forKey: .kind)
+            try container.encode(identifier, forKey: .identifier)
+        case .filters(let draft):
+            try container.encode(Kind.filters, forKey: .kind)
+            try container.encode(draft, forKey: .draft)
+        }
     }
 }

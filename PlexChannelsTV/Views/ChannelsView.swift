@@ -15,11 +15,6 @@ struct ChannelsView: View {
     @EnvironmentObject private var plexService: PlexService
     @StateObject private var coordinator = ChannelsCoordinator()
 
-    private struct LibrarySelection: Identifiable {
-        let library: PlexLibrary
-        var id: String { library.uuid }
-    }
-
     private enum Destination: Hashable {
         case quickPlay(LibraryPreviewItem)
     }
@@ -30,11 +25,10 @@ struct ChannelsView: View {
     }
 
     @State private var path: [Destination] = []
-    @State private var showLibraryPicker = false
-    @State private var pickedLibrary: LibrarySelection?
+    @State private var showChannelBuilder = false
+    @State private var hasAutoPresentedBuilder = false
     @State private var previewItems: [LibraryPreviewItem] = []
     @State private var isLoadingPreviews = false
-    @State private var hasAutoPresentedPicker = false
     @State private var quickPlayError: String?
     @State private var pendingFocusRestore: FocusTarget?
 
@@ -65,44 +59,27 @@ struct ChannelsView: View {
                 }
             }
         }
-        .sheet(isPresented: $showLibraryPicker, onDismiss: {
+        .fullScreenCover(isPresented: $showChannelBuilder, onDismiss: {
             if channelStore.channels.isEmpty {
                 headerAddFocused = true
             }
         }) {
-            LibraryPickerView(
+            ChannelBuilderFlowView(
+                plexService: plexService,
+                channelStore: channelStore,
                 libraries: plexService.session?.libraries ?? [],
-                onLibraryChosen: { library in
-                    if let existing = channelStore.channel(for: library) {
-                        showLibraryPicker = false
-                        focusChannel(existing)
-                    } else {
-                        pickedLibrary = LibrarySelection(library: library)
-                        showLibraryPicker = false
-                    }
-                },
-                onCancel: {
-                    showLibraryPicker = false
-                }
-            )
-        }
-        .sheet(item: $pickedLibrary) { selection in
-            ChannelWizardView(
-                library: selection.library,
                 onComplete: { channel in
-                    pickedLibrary = nil
-                    hasAutoPresentedPicker = true
+                    showChannelBuilder = false
+                    hasAutoPresentedBuilder = true
                     focusChannel(channel)
                 },
                 onCancel: {
-                    pickedLibrary = nil
+                    showChannelBuilder = false
                     if channelStore.channels.isEmpty {
                         headerAddFocused = true
                     }
                 }
             )
-            .environmentObject(plexService)
-            .environmentObject(channelStore)
         }
         .fullScreenCover(item: $coordinator.playbackRequest, onDismiss: {
             AppLoggers.playback.info("event=player.cover.dismissed")
@@ -170,7 +147,7 @@ private extension ChannelsView {
             Spacer(minLength: 0)
 
             Button {
-                showLibraryPicker = true
+                showChannelBuilder = true
             } label: {
                 Label("Add Channel", systemImage: "plus.circle.fill")
                     .font(.title3)
@@ -377,11 +354,11 @@ private extension ChannelsView {
 private extension ChannelsView {
     func evaluateInitialState() {
         if channelStore.channels.isEmpty {
-            if !hasAutoPresentedPicker && !showLibraryPicker && pickedLibrary == nil {
+            if !hasAutoPresentedBuilder && !showChannelBuilder {
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
-                    showLibraryPicker = true
+                    showChannelBuilder = true
                 }
-                hasAutoPresentedPicker = true
+                hasAutoPresentedBuilder = true
             }
             headerAddFocused = true
             focusedCard = nil

@@ -76,16 +76,26 @@ final class ChannelStore: ObservableObject {
     }
 
     func containsChannel(for library: PlexLibrary) -> Bool {
-        channels.contains { $0.libraryKey == library.key }
+        channels.contains { channel in
+            if channel.libraryKey == library.key { return true }
+            return channel.sourceLibraries.contains { source in
+                source.id == library.uuid || source.key == library.key
+            }
+        }
     }
 
     func channel(for library: PlexLibrary) -> Channel? {
-        channels.first { $0.libraryKey == library.key }
+        channels.first { channel in
+            if channel.libraryKey == library.key { return true }
+            return channel.sourceLibraries.contains { source in
+                source.id == library.uuid || source.key == library.key
+            }
+        }
     }
 
     @discardableResult
     func addChannel(_ channel: Channel) -> Bool {
-        if channels.contains(where: { $0.libraryKey == channel.libraryKey || $0.name == channel.name }) {
+        if channels.contains(where: { $0.name.caseInsensitiveCompare(channel.name) == .orderedSame }) {
             return false
         }
         channels.append(channel)
@@ -121,7 +131,14 @@ final class ChannelStore: ObservableObject {
                 libraryKey: library.key,
                 libraryType: library.type,
                 scheduleAnchor: startAt,
-                items: mediaItems
+                items: mediaItems,
+                sourceLibraries: [Channel.SourceLibrary(
+                    id: library.uuid,
+                    key: library.key,
+                    title: library.title,
+                    type: library.type
+                )],
+                options: Channel.Options(shuffle: shuffle)
             )
 
             guard addChannel(channel) else {

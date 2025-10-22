@@ -125,12 +125,24 @@ final class ChannelSeeder {
         let medias = items.compactMap(Channel.Media.from)
         guard !medias.isEmpty else { return false }
 
+        let sources = libraries.map { library in
+            Channel.SourceLibrary(
+                id: library.uuid,
+                key: library.key,
+                title: library.title,
+                type: library.type
+            )
+        }
+
         let channel = Channel(
             name: "Movies — Mix",
             libraryKey: "seed.movies.mix",
             libraryType: .movie,
             scheduleAnchor: Date(),
-            items: medias.shuffled()
+            items: medias.shuffled(),
+            sourceLibraries: sources,
+            options: Channel.Options(shuffle: true),
+            provenance: .seed(identifier: SeedChannel.moviesMix.rawValue)
         )
 
         let appended = await channelStore.addChannel(channel)
@@ -148,12 +160,24 @@ final class ChannelSeeder {
         let medias = filtered.compactMap(Channel.Media.from)
         guard !medias.isEmpty else { return false }
 
+        let sources = libraries.map { library in
+            Channel.SourceLibrary(
+                id: library.uuid,
+                key: library.key,
+                title: library.title,
+                type: library.type
+            )
+        }
+
         let channel = Channel(
             name: "Movies — Action",
             libraryKey: "seed.movies.action",
             libraryType: .movie,
             scheduleAnchor: Date(),
-            items: medias.shuffled()
+            items: medias.shuffled(),
+            sourceLibraries: sources,
+            options: Channel.Options(shuffle: true),
+            provenance: .seed(identifier: SeedChannel.moviesAction.rawValue)
         )
 
         let appended = await channelStore.addChannel(channel)
@@ -169,12 +193,24 @@ final class ChannelSeeder {
         let medias = episodes.compactMap(Channel.Media.from)
         guard !medias.isEmpty else { return false }
 
+        let sources = libraries.map { library in
+            Channel.SourceLibrary(
+                id: library.uuid,
+                key: library.key,
+                title: library.title,
+                type: library.type
+            )
+        }
+
         let channel = Channel(
             name: "TV — Mix",
             libraryKey: "seed.tv.mix",
             libraryType: .episode,
             scheduleAnchor: Date(),
-            items: medias.shuffled()
+            items: medias.shuffled(),
+            sourceLibraries: sources,
+            options: Channel.Options(shuffle: true),
+            provenance: .seed(identifier: SeedChannel.tvMix.rawValue)
         )
 
         let appended = await channelStore.addChannel(channel)
@@ -192,12 +228,24 @@ final class ChannelSeeder {
         let medias = comedies.compactMap(Channel.Media.from)
         guard !medias.isEmpty else { return false }
 
+        let sources = libraries.map { library in
+            Channel.SourceLibrary(
+                id: library.uuid,
+                key: library.key,
+                title: library.title,
+                type: library.type
+            )
+        }
+
         let channel = Channel(
             name: "TV — Comedy",
             libraryKey: "seed.tv.comedy",
             libraryType: .episode,
             scheduleAnchor: Date(),
-            items: medias.shuffled()
+            items: medias.shuffled(),
+            sourceLibraries: sources,
+            options: Channel.Options(shuffle: true),
+            provenance: .seed(identifier: SeedChannel.tvComedy.rawValue)
         )
 
         let appended = await channelStore.addChannel(channel)
