@@ -16,8 +16,6 @@ struct RuleGroupBuilderView: View {
     let countState: ChannelBuilderViewModel.CountState?
     var onSpecChange: (LibraryFilterSpec) -> Void
 
-    private let modeOptions: [FilterGroup.Mode] = [.all, .any]
-
     var body: some View {
         VStack(alignment: .leading, spacing: 24) {
             header
@@ -74,8 +72,42 @@ private struct GroupEditor: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: spacing) {
-            modeSelector
+            // Control row: Mode toggle + Add buttons
+            HStack(spacing: 12) {
+                // Toggle button for Match All/Any
+                Button {
+                    group.mode = group.mode == .all ? .any : .all
+                    onGroupChange(group)
+                } label: {
+                    Text(group.mode == .all ? "Match all of the following" : "Match any of the following")
+                        .font(.callout.weight(.medium))
+                }
+                .buttonStyle(.bordered)
+                .tint(.secondary)
+                
+                // Add Filter button
+                Button {
+                    addFilter()
+                } label: {
+                    Image(systemName: "plus")
+                        .imageScale(.small)
+                }
+                .buttonStyle(.bordered)
+                .tint(.secondary)
+                
+                // Add Group button
+                Button {
+                    addGroup()
+                } label: {
+                    Image(systemName: "ellipsis")
+                        .imageScale(.small)
+                }
+                .buttonStyle(.bordered)
+                .tint(.secondary)
+            }
+            .padding(.leading, CGFloat(level) * 12)
 
+            // Rules
             ForEach($group.rules) { $rule in
                 FilterRuleEditor(
                     rule: $rule,
@@ -94,32 +126,7 @@ private struct GroupEditor: View {
                 .padding(.leading, CGFloat(level) * 12)
             }
 
-            Button {
-                let field = availableFields.first ?? .title
-                let op = field.supportedOperators.first ?? .equals
-                let initialValue: FilterValue
-                switch field.valueKind {
-                case .text:
-                    initialValue = .text("")
-                case .number:
-                    initialValue = .number(0)
-                case .boolean:
-                    initialValue = .boolean(true)
-                case .date:
-                    initialValue = .date(Date())
-                case .enumMulti, .enumSingle:
-                    initialValue = .enumSet([])
-                }
-                let newRule = FilterRule(field: field, op: op, value: initialValue)
-                group.rules.append(newRule)
-                AppLoggers.channel.info("event=builder.rules.change libraryID=\(library.uuid, privacy: .public) field=\(field.id, privacy: .public) op=\(op.rawValue, privacy: .public) action=add")
-                onGroupChange(group)
-            } label: {
-                Label("Add Filter", systemImage: "plus")
-            }
-            .buttonStyle(.borderless)
-            .padding(.leading, CGFloat(level) * 12)
-
+            // Nested groups
             ForEach($group.groups) { $subgroup in
                 VStack(alignment: .leading, spacing: spacing) {
                     GroupEditor(
@@ -143,26 +150,18 @@ private struct GroupEditor: View {
                         }
                     } label: {
                         Label("Remove Group", systemImage: "trash")
+                            .font(.callout)
                     }
                     .buttonStyle(.borderless)
                     .padding(.leading, CGFloat(level + 1) * 12)
                 }
                 .padding(.top, spacing)
+                .padding(16)
+                .background(
+                    RoundedRectangle(cornerRadius: 12, style: .continuous)
+                        .fill(Color.white.opacity(0.05))
+                )
             }
-
-            Button {
-                var newGroup = FilterGroup(mode: .all)
-                let field = availableFields.first ?? .title
-                let op = field.supportedOperators.first ?? .equals
-                newGroup.rules.append(FilterRule(field: field, op: op, value: .text("")))
-                group.groups.append(newGroup)
-                AppLoggers.channel.info("event=builder.rules.change libraryID=\(library.uuid, privacy: .public) field=group action=add")
-                onGroupChange(group)
-            } label: {
-                Label("Add Group", systemImage: "rectangle.3.group")
-            }
-            .buttonStyle(.borderless)
-            .padding(.leading, CGFloat(level) * 12)
         }
         .padding(20)
         .background(
@@ -170,14 +169,37 @@ private struct GroupEditor: View {
                 .fill(Color.white.opacity(0.06))
         )
     }
-
-    private var modeSelector: some View {
-        Picker("Mode", selection: $group.mode) {
-            ForEach(FilterGroup.Mode.allCases) { mode in
-                Text(mode.displayName).tag(mode)
-            }
+    
+    private func addFilter() {
+        let field = availableFields.first ?? .title
+        let op = field.supportedOperators.first ?? .equals
+        let initialValue: FilterValue
+        switch field.valueKind {
+        case .text:
+            initialValue = .text("")
+        case .number:
+            initialValue = .number(0)
+        case .boolean:
+            initialValue = .boolean(true)
+        case .date:
+            initialValue = .date(Date())
+        case .enumMulti, .enumSingle:
+            initialValue = .enumSet([])
         }
-        .pickerStyle(.segmented)
+        let newRule = FilterRule(field: field, op: op, value: initialValue)
+        group.rules.append(newRule)
+        AppLoggers.channel.info("event=builder.rules.change libraryID=\(library.uuid, privacy: .public) field=\(field.id, privacy: .public) op=\(op.rawValue, privacy: .public) action=add")
+        onGroupChange(group)
+    }
+    
+    private func addGroup() {
+        var newGroup = FilterGroup(mode: .all)
+        let field = availableFields.first ?? .title
+        let op = field.supportedOperators.first ?? .equals
+        newGroup.rules.append(FilterRule(field: field, op: op, value: .text("")))
+        group.groups.append(newGroup)
+        AppLoggers.channel.info("event=builder.rules.change libraryID=\(library.uuid, privacy: .public) field=group action=add")
+        onGroupChange(group)
     }
 }
 
@@ -190,43 +212,77 @@ private struct FilterRuleEditor: View {
 
     @State private var enumOptions: [FilterOption] = []
     @State private var isLoadingOptions = false
-    @State private var showEnumPicker = false
     @State private var numericString: String = ""
     @State private var textValue: String = ""
     @State private var dateValue: Date = Date()
     @State private var relativePreset: RelativeDatePreset = .last30Days
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack(alignment: .center, spacing: 16) {
-                Picker("Field", selection: $rule.field) {
-                    ForEach(availableFields, id: \.self) { field in
-                        Text(field.displayName).tag(field)
+        HStack(alignment: .center, spacing: 12) {
+            // Field picker - dropdown menu
+            Menu {
+                ForEach(availableFields, id: \.self) { field in
+                    Button {
+                        rule.field = field
+                        AppLoggers.channel.info("event=builder.rules.change libraryID=\(library.uuid, privacy: .public) field=\(field.id, privacy: .public) op=\(rule.op.rawValue, privacy: .public)")
+                        resetValue(for: field)
+                    } label: {
+                        Text(field.displayName)
                     }
                 }
-                .frame(width: 220)
-
-                Picker("Operator", selection: $rule.op) {
-                    ForEach(rule.field.supportedOperators, id: \.self) { op in
-                        Text(op.displayName).tag(op)
-                    }
+            } label: {
+                HStack {
+                    Text(rule.field.displayName)
+                        .lineLimit(1)
+                    Image(systemName: "chevron.down")
+                        .imageScale(.small)
                 }
-                .frame(width: 220)
-
-                valueEditor
-
-                Button(role: .destructive, action: onRemove) {
-                    Image(systemName: "trash")
-                }
-                .buttonStyle(.borderless)
+                .frame(width: 200, alignment: .leading)
+                .padding(.horizontal, 16)
+                .padding(.vertical, 10)
+                .background(
+                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                        .fill(Color.white.opacity(0.12))
+                )
             }
-        }
-        .onChange(of: rule.field) { _, newField in
-            AppLoggers.channel.info("event=builder.rules.change libraryID=\(library.uuid, privacy: .public) field=\(newField.id, privacy: .public) op=\(rule.op.rawValue, privacy: .public)")
-            resetValue(for: newField)
-        }
-        .onChange(of: rule.op) { _, newOp in
-            AppLoggers.channel.info("event=builder.rules.change libraryID=\(library.uuid, privacy: .public) field=\(rule.field.id, privacy: .public) op=\(newOp.rawValue, privacy: .public)")
+            .buttonStyle(.plain)
+            
+            // Operator picker - dropdown menu
+            Menu {
+                ForEach(rule.field.supportedOperators, id: \.self) { op in
+                    Button {
+                        rule.op = op
+                        AppLoggers.channel.info("event=builder.rules.change libraryID=\(library.uuid, privacy: .public) field=\(rule.field.id, privacy: .public) op=\(op.rawValue, privacy: .public)")
+                    } label: {
+                        Text(op.displayName)
+                    }
+                }
+            } label: {
+                HStack {
+                    Text(rule.op.displayName)
+                        .lineLimit(1)
+                    Image(systemName: "chevron.down")
+                        .imageScale(.small)
+                }
+                .frame(width: 180, alignment: .leading)
+                .padding(.horizontal, 16)
+                .padding(.vertical, 10)
+                .background(
+                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                        .fill(Color.white.opacity(0.12))
+                )
+            }
+            .buttonStyle(.plain)
+
+            // Value editor
+            valueEditor
+
+            // Delete button
+            Button(role: .destructive, action: onRemove) {
+                Image(systemName: "trash")
+                    .imageScale(.medium)
+            }
+            .buttonStyle(.borderless)
         }
         .task(id: rule.field) {
             await loadOptionsIfNeeded()
@@ -238,18 +294,22 @@ private struct FilterRuleEditor: View {
         switch rule.field.valueKind {
         case .text:
             TextField("Value", text: bindingForText())
-                .padding(.horizontal, 18)
-                .frame(width: 320, height: 52)
+                .textFieldStyle(.plain)
+                .padding(.horizontal, 16)
+                .padding(.vertical, 10)
+                .frame(width: 280)
                 .background(
-                    RoundedRectangle(cornerRadius: 14, style: .continuous)
+                    RoundedRectangle(cornerRadius: 10, style: .continuous)
                         .fill(Color.white.opacity(0.12))
                 )
         case .number:
             TextField("Value", text: bindingForNumber())
-                .padding(.horizontal, 18)
-                .frame(width: 180, height: 52)
+                .textFieldStyle(.plain)
+                .padding(.horizontal, 16)
+                .padding(.vertical, 10)
+                .frame(width: 160)
                 .background(
-                    RoundedRectangle(cornerRadius: 14, style: .continuous)
+                    RoundedRectangle(cornerRadius: 10, style: .continuous)
                         .fill(Color.white.opacity(0.12))
                 )
         case .boolean:
@@ -264,33 +324,50 @@ private struct FilterRuleEditor: View {
                     rule.value = .relativeDate(preset)
                 }
             )
-            .frame(width: 300)
+            .frame(width: 280)
         case .enumMulti, .enumSingle:
-            Button {
-                showEnumPicker = true
+            // Dropdown menu for enum values
+            Menu {
+                if isLoadingOptions {
+                    Text("Loading...")
+                } else if enumOptions.isEmpty {
+                    Text("No options available")
+                } else {
+                    ForEach(enumOptions) { option in
+                        Button {
+                            toggleEnumValue(option.value)
+                        } label: {
+                            HStack {
+                                Text(option.displayName)
+                                if selectionValues().contains(option.value) {
+                                    Image(systemName: "checkmark")
+                                }
+                            }
+                        }
+                    }
+                }
             } label: {
                 HStack {
                     if isLoadingOptions {
-                        ProgressView().progressViewStyle(.circular)
+                        ProgressView()
+                            .progressViewStyle(.circular)
+                            .scaleEffect(0.8)
                     } else {
                         Text(enumDisplayValue)
                             .lineLimit(1)
                     }
-                    Image(systemName: "chevron.right")
+                    Image(systemName: "chevron.down")
+                        .imageScale(.small)
                 }
-                .frame(width: 320, alignment: .leading)
-            }
-            .buttonStyle(.plain)
-            .sheet(isPresented: $showEnumPicker) {
-                EnumSelectionView(
-                    options: enumOptions,
-                    selection: Binding(
-                        get: { selectionValues() },
-                        set: { updateEnumSelection($0) }
-                    ),
-                    allowsMultiple: rule.field.valueKind == .enumMulti
+                .frame(width: 280, alignment: .leading)
+                .padding(.horizontal, 16)
+                .padding(.vertical, 10)
+                .background(
+                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                        .fill(Color.white.opacity(0.12))
                 )
             }
+            .buttonStyle(.plain)
         }
     }
 
@@ -398,19 +475,29 @@ private struct FilterRuleEditor: View {
             return []
         }
     }
-
-    private func updateEnumSelection(_ values: [String]) {
+    
+    private func toggleEnumValue(_ value: String) {
+        var currentValues = selectionValues()
+        
         if rule.field.valueKind == .enumMulti {
-            rule.value = .enumSet(values)
-        } else if let first = values.first {
-            rule.value = .enumCase(first)
+            if currentValues.contains(value) {
+                currentValues.removeAll { $0 == value }
+            } else {
+                currentValues.append(value)
+            }
+            rule.value = .enumSet(currentValues)
+        } else {
+            rule.value = .enumCase(value)
         }
     }
 
     private var enumDisplayValue: String {
         let values = selectionValues()
-        guard !values.isEmpty else { return "Select" }
-        return values.joined(separator: ", ")
+        guard !values.isEmpty else { return "Select..." }
+        if values.count == 1, let first = values.first {
+            return first
+        }
+        return "\(values.count) selected"
     }
 
     private func resetValue(for field: FilterField) {
@@ -455,6 +542,7 @@ private struct CountBadge: View {
             if state.isLoading {
                 ProgressView()
                     .progressViewStyle(.circular)
+                    .scaleEffect(0.8)
             }
             Text(countLabel)
                 .font(.footnote.bold())
@@ -472,57 +560,5 @@ private struct CountBadge: View {
             return state.approximate ? "~\(total)" : "\(total) items"
         }
         return state.isLoading ? "Counting…" : "—"
-    }
-}
-
-private struct EnumSelectionView: View {
-    let options: [FilterOption]
-    @Binding var selection: [String]
-    let allowsMultiple: Bool
-
-    var body: some View {
-        NavigationStack {
-            if options.isEmpty {
-                VStack(spacing: 16) {
-                    Text("No options available")
-                        .font(.headline)
-                        .foregroundStyle(.secondary)
-                }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .background(Color.black.opacity(0.01))
-                .navigationTitle("Values")
-            } else {
-                List {
-                    ForEach(options) { option in
-                        Button {
-                            toggle(option)
-                        } label: {
-                            HStack {
-                                Text(option.displayName)
-                                Spacer()
-                                if selection.contains(option.value) {
-                                    Image(systemName: "checkmark")
-                                        .foregroundColor(.accentColor)
-                                }
-                            }
-                        }
-                        .buttonStyle(.plain)
-                    }
-                }
-                .navigationTitle(allowsMultiple ? "Select Values" : "Choose Value")
-            }
-        }
-    }
-
-    private func toggle(_ option: FilterOption) {
-        if allowsMultiple {
-            if selection.contains(option.value) {
-                selection.removeAll { $0 == option.value }
-            } else {
-                selection.append(option.value)
-            }
-        } else {
-            selection = [option.value]
-        }
     }
 }
