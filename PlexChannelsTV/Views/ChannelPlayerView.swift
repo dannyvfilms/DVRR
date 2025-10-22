@@ -183,7 +183,8 @@ private extension ChannelPlayerView {
         clearPlayerObservers()
 
         let item = AVPlayerItem(url: plan.url)
-        item.preferredForwardBufferDuration = 3
+        // Increased buffer from 3s to 12s for smoother playback with less stalls
+        item.preferredForwardBufferDuration = 12
         player.replaceCurrentItem(with: item)
         configurePlayer(for: plan, entry: entry, item: item)
         configureObservers(for: item, entry: entry, plan: plan)
@@ -196,7 +197,7 @@ private extension ChannelPlayerView {
         item.preferredPeakBitRate = peakBitrate
         let peakKbps = Int((peakBitrate / 1_000).rounded())
         AppLoggers.playback.info(
-            "event=play.playerConfig itemID=\(entry.media.id, privacy: .public) remux=\(plan.directStream ? 1 : 0) forwardBufferSec=3 preferredPeakBitRateKbps=\(peakKbps) waitsToMinimizeStalling=1 externalPlayback=0"
+            "event=play.playerConfig itemID=\(entry.media.id, privacy: .public) remux=\(plan.directStream ? 1 : 0) forwardBufferSec=12 preferredPeakBitRateKbps=\(peakKbps) waitsToMinimizeStalling=1 externalPlayback=0"
         )
     }
 }
@@ -356,7 +357,7 @@ private extension ChannelPlayerView {
             let reason = (error as NSError?)?.localizedDescription ?? "direct_failed"
             var options = PlexService.StreamRequestOptions()
             options.preferDirect = false
-            options.preferredMaxBitrate = max(adaptiveState.bitrateCap, 10_000)
+            options.preferredMaxBitrate = max(adaptiveState.bitrateCap, 8_000)
             options.forceRemux = plan.directStream
             options.forceTranscode = false
             startPlayback(for: entry, options: options, fallbackFrom: plan, fallbackReason: reason)
@@ -475,12 +476,13 @@ private extension ChannelPlayerView {
             return
         }
 
-        if Double(observedKbps) < Double(indicatedKbps) * 0.5 {
+        // Trigger if observed is less than 60% of indicated (was 50%)
+        if Double(observedKbps) < Double(indicatedKbps) * 0.6 {
             if adaptiveState.lowThroughputStart == nil {
                 adaptiveState.lowThroughputStart = Date()
             } else if !adaptiveState.lowThroughputTriggered,
                       let start = adaptiveState.lowThroughputStart,
-                      Date().timeIntervalSince(start) >= 10 {
+                      Date().timeIntervalSince(start) >= 5 {  // Reduced from 10s to be more proactive
                 adaptiveState.lowThroughputTriggered = true
                 attemptRecovery(for: plan, entry: entry, cause: .throughput(observed: observedKbps, indicated: indicatedKbps))
             }
@@ -521,10 +523,12 @@ private extension ChannelPlayerView {
             adaptiveState.bitrateCap = reduced
         } else if adaptiveState.downshiftCount >= 2 {
             adaptiveState.forceTranscode = true
-            adaptiveState.bitrateCap = 7_000
+            adaptiveState.bitrateCap = 6_000  // Reduced from 7Mbps for better stability
             forceTranscodeTriggered = true
         } else {
-            let reduced = max(Int(Double(previousBitrate) * 0.7), minimumCap)
+            // First stall: drop to 60% (more aggressive), subsequent stalls: 70%
+            let reduction = adaptiveState.downshiftCount == 0 ? 0.6 : 0.7
+            let reduced = max(Int(Double(previousBitrate) * reduction), minimumCap)
             if reduced == previousBitrate {
                 return
             }
@@ -724,7 +728,7 @@ private extension ChannelPlayerView {
     }
 
     struct AdaptiveState {
-        var bitrateCap: Int = 10_000
+        var bitrateCap: Int = 8_000  // Start conservative to reduce stalls
         var downshiftCount: Int = 0
         var forceTranscode: Bool = false
         var lowThroughputStart: Date?

@@ -31,7 +31,9 @@ Native **tvOS 17+** SwiftUI app that creates **fake "live TV" channels** from a 
 
 ### Playback
 - ✅ **Direct play** - Prefers native streams when codec-compatible
-- ✅ **HLS transcode fallback** - With adaptive bitrate (10Mbps → 7Mbps on stall)
+- ✅ **HLS transcode fallback** - Conservative 8Mbps start, adaptive downshift on issues
+- ✅ **Smart buffering** - 12-second forward buffer (up from 3s) for smoother playback
+- ✅ **Proactive quality adjustment** - Detects low throughput in 5s, drops to 60% on first stall
 - ✅ **Force remux for MKV** - Copies streams without re-encoding
 - ✅ **Computed offsets** - Seeks to correct wall-clock position
 - ✅ **Coordinator pattern** - Centralized playback state management
@@ -484,6 +486,25 @@ VStack {
 **Root Cause**: When using `copyts=1` (copy timestamps), AVPlayer's `currentTime()` returns absolute PTS from original file, not relative time. Recovery code was adding `entry.offset` to `currentSeconds`, double-counting the offset.  
 **Solution**: Use `currentSeconds` directly as resume position since it's already absolute with `copyts=1`. See `ChannelPlayerView.attemptRecovery()` lines 569-580.
 
+### Issue: Frequent Playback Stalls/Buffering
+
+**Status**: Improved (Task 29)  
+**Symptoms**: Repeated `MEDIA_PLAYBACK_STALL` events, especially on remote/WiFi connections  
+**Root Causes**: 
+1. Very small buffer (3s) left no headroom for network fluctuations
+2. Aggressive initial bitrate (10Mbps) exceeded available bandwidth
+3. Slow reaction to throughput issues (10s detection window)
+4. Conservative downshift (30%) didn't free enough bandwidth
+
+**Solutions Applied**:
+1. **Increased buffer**: 3s → 12s forward buffer (`preferredForwardBufferDuration`)
+2. **Conservative start**: 10Mbps → 8Mbps initial bitrate
+3. **Faster detection**: 10s → 5s throughput monitoring window
+4. **Aggressive first downshift**: 40% drop on first stall (vs 30%), gives immediate bandwidth headroom
+5. **Earlier threshold**: Trigger at 60% throughput (vs 50%) to catch issues sooner
+
+**Expected Result**: Significantly fewer stalls, smoother playback, but slightly longer initial buffering.
+
 ---
 
 ## Logging & Debugging
@@ -594,17 +615,18 @@ subsystem:PlexChannelsTV eventMessage:CONTAINS "404"
 
 ## Version History
 
-**v1.0** (Tasks 1-28):
+**v1.0** (Tasks 1-29):
 - ✅ PIN-based auth with server discovery
 - ✅ Channel creation from Plex libraries
 - ✅ 24/7 scheduling with Now/Next
 - ✅ Full artwork support (posters, backgrounds, logos)
 - ✅ Direct play + HLS transcode with adaptive bitrate
 - ✅ Smart buffer recovery (preserves playback position)
+- ✅ Optimized buffering strategy (12s buffer, 8Mbps start, proactive downshift)
 - ✅ tvOS-native focus and interactions
 - ✅ Structured logging for diagnostics
 
 ---
 
-**Last Updated**: Task 28 (2025-10-22)  
-**Status**: MVP Complete - All core features working
+**Last Updated**: Task 29 (2025-10-22)  
+**Status**: MVP Complete - All core features working, buffering optimized

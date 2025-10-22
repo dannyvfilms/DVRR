@@ -29,7 +29,7 @@ final class PlexService: ObservableObject {
 
     struct StreamRequestOptions {
         var preferDirect: Bool = true
-        var preferredMaxBitrate: Int = 10_000
+        var preferredMaxBitrate: Int = 8_000  // Reduced from 10Mbps for better stability
         var forceTranscode: Bool = false
         var forceRemux: Bool = false
     }
