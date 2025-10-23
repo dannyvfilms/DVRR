@@ -153,7 +153,7 @@ private extension ChannelRowView {
                                 image
                                     .resizable()
                                     .scaledToFit()
-                                    .frame(maxWidth: cardSize.width * 0.6)
+                                    .frame(maxWidth: cardSize.width * 0.6, maxHeight: cardSize.height * 0.33)
                                     .shadow(color: .black.opacity(0.5), radius: 8, x: 0, y: 4)
                             case .failure:
                                 Text(snapshot.now.media.seriesTitle)
