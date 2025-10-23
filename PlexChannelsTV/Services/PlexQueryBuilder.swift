@@ -210,10 +210,16 @@ private extension PlexQueryBuilder {
             AppLoggers.channel.info("event=tvFilter.debug sampleShow[\(index)] title=\(show.title ?? "unknown") ratingKey=\(show.ratingKey)")
         }
         
+        // Debug: Log the show filters being applied
+        AppLoggers.channel.info("event=tvFilter.debug showFilters rules=\(showFilters.rules.count) groups=\(showFilters.groups.count)")
+        for (index, rule) in showFilters.rules.enumerated() {
+            AppLoggers.channel.info("event=tvFilter.debug showRule[\(index)] field=\(rule.field) op=\(rule.op) value=\(rule.value)")
+        }
+        
         let matchingShows = showFilters.isEmpty ? allShows : allShows.filter { show in
-            let matchesResult = matches(show, group: showFilters)
-            AppLoggers.channel.info("event=tvFilter.debug showMatch title=\(show.title ?? "unknown") matches=\(matchesResult)")
-            return matchesResult
+            let matches = matches(show, group: showFilters)
+            AppLoggers.channel.info("event=tvFilter.debug showMatch title=\(show.title ?? "unknown") matches=\(matches)")
+            return matches
         }
         
         AppLoggers.channel.info("event=tvFilter.matchedShows count=\(matchingShows.count) titles=\(matchingShows.prefix(10).map { $0.title ?? "unknown" }.joined(separator: ", "))")
@@ -237,12 +243,6 @@ private extension PlexQueryBuilder {
                 // The show title should match what we expect from the matchedShows array
                 let expectedTitle = show.title ?? "unknown"
                 AppLoggers.channel.info("event=tvFilter.debug verifyingShow expectedTitle=\(expectedTitle) actualTitle=\(show.title ?? "unknown")")
-                
-                // Safety check: Only process shows that contain "bluey" in the title
-                if !expectedTitle.lowercased().contains("bluey") {
-                    AppLoggers.channel.info("event=tvFilter.debug skippingShow reason=notBluey title=\(expectedTitle)")
-                    continue
-                }
                 
                 // Fetch episodes directly from this specific show
                 // Use the show's ratingKey (numeric ID) to fetch episodes
@@ -323,8 +323,12 @@ private extension PlexQueryBuilder {
         var showRules: [FilterRule] = []
         var showGroups: [FilterGroup] = []
         
+        AppLoggers.channel.info("event=tvFilter.debug extractShowLevelFilters input rules=\(group.rules.count) groups=\(group.groups.count)")
+        
         for rule in group.rules {
-            if isShowLevelField(rule.field) {
+            let isShowLevel = isShowLevelField(rule.field)
+            AppLoggers.channel.info("event=tvFilter.debug extractShowLevelFilters rule field=\(rule.field) isShowLevel=\(isShowLevel)")
+            if isShowLevel {
                 showRules.append(rule)
             }
         }
@@ -336,7 +340,10 @@ private extension PlexQueryBuilder {
             }
         }
         
-        return FilterGroup(mode: group.mode, rules: showRules, groups: showGroups)
+        let result = FilterGroup(mode: group.mode, rules: showRules, groups: showGroups)
+        AppLoggers.channel.info("event=tvFilter.debug extractShowLevelFilters result rules=\(result.rules.count) groups=\(result.groups.count) isEmpty=\(result.isEmpty)")
+        
+        return result
     }
     
     /// Extracts only the episode-level filters from a filter group
@@ -413,28 +420,24 @@ private extension PlexQueryBuilder {
 private extension PlexQueryBuilder {
     func compareText(candidate: String?, search: String, operator op: FilterOperator) -> Bool {
         guard let candidate else {
-            AppLoggers.channel.info("event=tvFilter.debug textCompare candidate=nil search=\(search) op=\(op) result=\(op == .notEquals)")
             return op == .notEquals
         }
-        let result: Bool
         switch op {
         case .contains:
-            result = candidate.localizedCaseInsensitiveContains(search)
+            return candidate.localizedCaseInsensitiveContains(search)
         case .notContains:
-            result = !candidate.localizedCaseInsensitiveContains(search)
+            return !candidate.localizedCaseInsensitiveContains(search)
         case .equals:
-            result = candidate.localizedCaseInsensitiveCompare(search) == .orderedSame
+            return candidate.localizedCaseInsensitiveCompare(search) == .orderedSame
         case .notEquals:
-            result = candidate.localizedCaseInsensitiveCompare(search) != .orderedSame
+            return candidate.localizedCaseInsensitiveCompare(search) != .orderedSame
         case .beginsWith:
-            result = candidate.lowercased().hasPrefix(search.lowercased())
+            return candidate.lowercased().hasPrefix(search.lowercased())
         case .endsWith:
-            result = candidate.lowercased().hasSuffix(search.lowercased())
+            return candidate.lowercased().hasSuffix(search.lowercased())
         default:
-            result = false
+            return false
         }
-        AppLoggers.channel.info("event=tvFilter.debug textCompare candidate=\(candidate) search=\(search) op=\(op) result=\(result)")
-        return result
     }
 
     func compareEnumerations(
