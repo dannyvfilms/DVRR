@@ -11,9 +11,12 @@ import PlexKit
 struct ChannelBuilderFlowView: View {
     @StateObject private var viewModel: ChannelBuilderViewModel
     @State private var isCreating = false
+    @State private var previewMedia: [Channel.Media] = []
+    @State private var isLoadingPreview = false
     @FocusState private var focusedButton: FocusableButton?
     private let onComplete: (Channel) -> Void
     private let onCancel: () -> Void
+    private let plexService: PlexService
     
     private enum FocusableButton: Hashable {
         case cancel
@@ -29,6 +32,7 @@ struct ChannelBuilderFlowView: View {
         onComplete: @escaping (Channel) -> Void,
         onCancel: @escaping () -> Void
     ) {
+        self.plexService = plexService
         _viewModel = StateObject(wrappedValue: ChannelBuilderViewModel(
             plexService: plexService,
             channelStore: channelStore,
@@ -39,20 +43,77 @@ struct ChannelBuilderFlowView: View {
     }
 
     var body: some View {
-        NavigationStack {
-            VStack(alignment: .leading, spacing: 32) {
-                content
-                    .focusSectionIfAvailable()
-                Spacer(minLength: 20)
-                footer
-                    .focusSectionIfAvailable()
+        mainContent
+            .alert(item: errorBinding) { alert in
+                Alert(title: Text("Channel Builder"), message: Text(alert.message), dismissButton: .default(Text("OK")))
             }
-            .padding(.horizontal, 80)
-            .padding(.vertical, 40)
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            .onChange(of: viewModel.step) { _, newStep in
+                handleStepChange(newStep)
+            }
+            .onChange(of: viewModel.draft.perLibrarySpecs) { _, _ in
+                handleSpecChange()
+            }
+            .onChange(of: viewModel.draft.sort) { _, _ in
+                handleSortOrOptionChange()
+            }
+            .onChange(of: viewModel.draft.options.shuffle) { _, _ in
+                handleSortOrOptionChange()
+            }
+    }
+    
+    private var mainContent: some View {
+        NavigationStack {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 32) {
+                    content
+                        .focusSectionIfAvailable()
+                    Spacer(minLength: previewSpacerLength)
+
+                    previewRow
+                    
+                    Spacer(minLength: 20)
+                    
+                    footer
+                        .focusSectionIfAvailable()
+                }
+                .padding(.horizontal, 80)
+                .padding(.vertical, 40)
+                .frame(maxWidth: .infinity, alignment: .topLeading)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
             .background(.regularMaterial)
         }
-        .alert(item: Binding(
+    }
+    
+    @ViewBuilder
+    private var previewRow: some View {
+        if case .rules(let index) = viewModel.step,
+           viewModel.selectedLibraryRefs.indices.contains(index) {
+            let ref = viewModel.selectedLibraryRefs[index]
+            if let library = viewModel.library(for: ref.id) {
+                let sortBinding = Binding(
+                    get: { viewModel.draft.sort },
+                    set: { viewModel.draft.sort = $0 }
+                )
+                let shuffleBinding = Binding(
+                    get: { viewModel.draft.options.shuffle },
+                    set: { viewModel.draft.options.shuffle = $0 }
+                )
+                ChannelPreviewRow(
+                    previewMedia: previewMedia,
+                    plexService: plexService,
+                    countState: viewModel.counts[ref.id],
+                    availableSortKeys: viewModel.sortCatalog.availableSorts(for: library),
+                    sortDescriptor: sortBinding,
+                    shuffleEnabled: shuffleBinding,
+                    channelName: $viewModel.draft.name
+                )
+            }
+        }
+    }
+    
+    private var errorBinding: Binding<BuilderAlert?> {
+        Binding(
             get: {
                 viewModel.errorMessage.map { BuilderAlert(id: UUID(), message: $0) }
             },
@@ -61,9 +122,34 @@ struct ChannelBuilderFlowView: View {
                     viewModel.errorMessage = nil
                 }
             }
-        )) { alert in
-            Alert(title: Text("Channel Builder"), message: Text(alert.message), dismissButton: .default(Text("OK")))
+        )
+    }
+    
+    private func handleStepChange(_ newStep: ChannelBuilderViewModel.Step) {
+        if case .rules = newStep {
+            fetchPreviewMedia()
+        } else {
+            previewMedia = []
         }
+    }
+    
+    private func handleSpecChange() {
+        if case .rules = viewModel.step {
+            fetchPreviewMedia()
+        }
+    }
+
+    private func handleSortOrOptionChange() {
+        if case .rules = viewModel.step {
+            fetchPreviewMedia()
+        }
+    }
+
+    private var previewSpacerLength: CGFloat {
+        if case .rules = viewModel.step {
+            return 12
+        }
+        return 20
     }
 
     @ViewBuilder
@@ -73,10 +159,6 @@ struct ChannelBuilderFlowView: View {
             librariesStep
         case .rules(let index):
             rulesStep(index: index)
-        case .sort:
-            sortStep
-        case .review:
-            reviewStep
         }
     }
 
@@ -111,8 +193,8 @@ struct ChannelBuilderFlowView: View {
             let ref = viewModel.selectedLibraryRefs[index]
             if let library = viewModel.library(for: ref.id) {
                 let binding = viewModel.binding(for: ref)
-                VStack(alignment: .leading, spacing: 16) {
-                    Text("Step 2 · Rules (\(index + 1) of \(viewModel.selectedLibraryRefs.count))")
+                VStack(alignment: .leading, spacing: 24) {
+                    Text("Step 2 · Rules (\(index + 1) of \(viewModel.selectedLibraryRefs.count)) · \(library.title ?? "Library")")
                         .font(.title2.bold())
                     RuleGroupBuilderView(
                         spec: binding,
@@ -130,29 +212,6 @@ struct ChannelBuilderFlowView: View {
             Text("Select at least one library to continue.")
                 .foregroundStyle(.secondary)
         }
-    }
-
-    private var sortStep: some View {
-        VStack(alignment: .leading, spacing: 24) {
-            if let first = viewModel.selectedLibraryRefs.first, let library = viewModel.library(for: first.id) {
-                SortPickerView(
-                    descriptor: $viewModel.draft.sort,
-                    availableKeys: viewModel.sortCatalog.availableSorts(for: library)
-                )
-            } else {
-                Text("Sort options will appear once a library is selected.")
-                    .foregroundStyle(.secondary)
-            }
-        }
-    }
-
-    private var reviewStep: some View {
-        ChannelBuilderReviewView(
-            draft: $viewModel.draft,
-            libraries: viewModel.selectedLibraryRefs,
-            counts: viewModel.counts,
-            totalItems: viewModel.totalItemCountEstimate()
-        )
     }
 
     @ViewBuilder
@@ -190,39 +249,11 @@ struct ChannelBuilderFlowView: View {
                         AppLoggers.channel.info("event=builder.next.update oldCount=\(oldValue) newCount=\(newValue) isDisabled=\(newValue == 0)")
                     }
 
-                case .rules, .sort:
+                case .rules(let index):
                     Button("Back") {
-                        switch viewModel.step {
-                        case .rules(let index):
-                            viewModel.goBack(from: .rules(index: index))
-                        case .sort:
-                            viewModel.goBack(from: .sort)
-                        default:
-                            break
-                        }
+                        viewModel.goBack(from: .rules(index: index))
                     }
                     .buttonStyle(.bordered)
-                    .focused($focusedButton, equals: .back)
-
-                    Button("Next") {
-                        switch viewModel.step {
-                        case .rules(let index):
-                            viewModel.goToNextRulesStep(currentIndex: index)
-                        case .sort:
-                            viewModel.advanceFromSort()
-                        default:
-                            break
-                        }
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .focused($focusedButton, equals: .next)
-
-                case .review:
-                    Button("Back") {
-                        viewModel.goBack(from: .review)
-                    }
-                    .buttonStyle(.bordered)
-                    .disabled(isCreating)
                     .focused($focusedButton, equals: .back)
 
                     if isCreating {
@@ -230,16 +261,38 @@ struct ChannelBuilderFlowView: View {
                             .progressViewStyle(.circular)
                             .frame(height: 44)
                     } else {
-                        Button("Create Channel") {
-                            Task {
-                                await createChannel()
+                        let isLast = index >= viewModel.selectedLibraryRefs.count - 1
+                        Button(isLast ? "Create Channel" : "Next") {
+                            if isLast {
+                                Task {
+                                    await createChannel()
+                                }
+                            } else {
+                                AppLoggers.channel.info("event=builder.next.tap step=rules index=\(index)")
+                                _ = viewModel.goToNextRulesStep(currentIndex: index)
                             }
                         }
                         .buttonStyle(.borderedProminent)
-                        .disabled(viewModel.draft.selectedLibraries.isEmpty)
-                        .focused($focusedButton, equals: .create)
+                        .disabled(isLast && viewModel.draft.selectedLibraries.isEmpty)
+                        .focused($focusedButton, equals: isLast ? .create : .next)
+                        .onAppear {
+                            focusedButton = isLast ? .create : .next
+                        }
                     }
                 }
+            }
+        }
+    }
+
+    private func fetchPreviewMedia() {
+        guard !isLoadingPreview else { return }
+        isLoadingPreview = true
+        
+        Task {
+            let media = await viewModel.fetchPreviewMedia(limit: 20)
+            await MainActor.run {
+                self.previewMedia = media
+                self.isLoadingPreview = false
             }
         }
     }

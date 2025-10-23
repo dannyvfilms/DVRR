@@ -12,6 +12,7 @@ struct ChannelRowView: View {
     enum MenuAction {
         case startNow
         case startBeginning
+        case delete
     }
 
     private struct Snapshot {
@@ -78,6 +79,12 @@ struct ChannelRowView: View {
                     "event=channel.menu.action action=startBeginning target=\(String(describing: menuTarget), privacy: .public)"
                 )
                 handleMenuSelection(.startBeginning)
+            }
+            Button("Delete Channel", role: .destructive) {
+                AppLoggers.channel.info(
+                    "event=channel.menu.action action=delete target=\(String(describing: menuTarget), privacy: .public)"
+                )
+                handleMenuSelection(.delete)
             }
             Button("Cancel", role: .cancel) {
                 AppLoggers.channel.info("event=channel.menu.action action=cancel")
@@ -149,7 +156,7 @@ private extension ChannelRowView {
                                     .frame(maxWidth: cardSize.width * 0.6)
                                     .shadow(color: .black.opacity(0.5), radius: 8, x: 0, y: 4)
                             case .failure:
-                                Text(snapshot.now.media.metadata?.title ?? snapshot.now.media.title)
+                                Text(snapshot.now.media.seriesTitle)
                                     .font(.title2.bold())
                                     .foregroundColor(.white)
                                     .shadow(radius: 4)
@@ -158,14 +165,14 @@ private extension ChannelRowView {
                                 Color.clear
                                     .frame(height: 60)
                             }
-                        }
-                    } else {
-                        Text(snapshot?.now.media.metadata?.title ?? snapshot?.now.media.title ?? "Now Playing")
-                            .font(.title2.bold())
-                            .foregroundColor(.white)
-                            .shadow(radius: 4)
                     }
+                } else {
+                    Text(snapshot?.now.media.seriesTitle ?? "Now Playing")
+                        .font(.title2.bold())
+                        .foregroundColor(.white)
+                        .shadow(radius: 4)
                 }
+            }
                 .padding(.horizontal, 20)
                 .padding(.bottom, 24)
             }
@@ -183,8 +190,16 @@ private extension ChannelRowView {
     }
 
     private func nowDetails(for snapshot: Snapshot?) -> some View {
-        let title = snapshot?.now.media.metadata?.title ?? snapshot?.now.media.title ?? "Schedule pending…"
-        let subtitle = snapshot.map { "Now Playing · \(formatTime($0.remaining)) left" } ?? "Schedule pending"
+        let title = snapshot?.now.media.seriesTitle ?? "Schedule pending…"
+        let subtitle: String = {
+            guard let snapshot else { return "Schedule pending" }
+            var components: [String] = []
+            if let label = snapshot.now.media.seasonEpisodeLabel {
+                components.append(label)
+            }
+            components.append("\(formatTime(snapshot.remaining)) left")
+            return components.joined(separator: " · ")
+        }()
 
         return VStack(alignment: .leading, spacing: 4) {
             Text(title)
@@ -255,10 +270,18 @@ private extension ChannelRowView {
                 menuTarget = .upNext(media)
             }
             
-            Text(media.metadata?.title ?? media.title)
+            Text(media.seriesTitle)
                 .font(.caption)
                 .lineLimit(1)
                 .frame(width: width, alignment: .leading)
+            
+            if let label = media.seasonEpisodeLabel {
+                Text(label)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .frame(width: width, alignment: .leading)
+            }
         }
     }
 }
@@ -400,6 +423,11 @@ private extension ChannelRowView {
     private func handleMenuSelection(_ action: MenuAction) {
         guard let target = menuTarget else { return }
         defer { menuTarget = nil }
+
+        if action == .delete {
+            onMenuAction(channel, action)
+            return
+        }
         
         switch target {
         case .now:

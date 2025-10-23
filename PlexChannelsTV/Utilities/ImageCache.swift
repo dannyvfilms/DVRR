@@ -40,6 +40,7 @@ final class ImageLoader: ObservableObject {
     @Published private(set) var phase: CachedImagePhase = .empty
 
     private var task: Task<Void, Never>?
+    private static var loggedMissingLogos: Set<String> = []
 
     func load(url: URL?, scale: CGFloat = 1.0) {
         task?.cancel()
@@ -65,7 +66,14 @@ final class ImageLoader: ObservableObject {
 
                 // Check HTTP status
                 if let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode != 200 {
-                    AppLoggers.net.error("event=image.load.failed status=\(httpResponse.statusCode) url=\(url.redactedForLogging(), privacy: .public)")
+                    if httpResponse.statusCode == 404, let logoDescriptor = Self.logoDescriptor(from: url) {
+                        if !Self.loggedMissingLogos.contains(logoDescriptor) {
+                            Self.loggedMissingLogos.insert(logoDescriptor)
+                            AppLoggers.net.info("event=image.logo.missing url=\(logoDescriptor, privacy: .public)")
+                        }
+                    } else {
+                        AppLoggers.net.error("event=image.load.failed status=\(httpResponse.statusCode) url=\(url.redactedForLogging(), privacy: .public)")
+                    }
                     self.phase = .failure
                     return
                 }
@@ -89,6 +97,23 @@ final class ImageLoader: ObservableObject {
     func cancel() {
         task?.cancel()
         task = nil
+    }
+
+    private static func logoDescriptor(from url: URL) -> String? {
+        if url.absoluteString.contains("clearLogo") {
+            return url.redactedForLogging()
+        }
+        guard let components = URLComponents(url: url, resolvingAgainstBaseURL: false),
+              let encodedTarget = components.queryItems?.first(where: { $0.name == "url" })?.value else {
+            return nil
+        }
+
+        if let decoded = encodedTarget.removingPercentEncoding,
+           let nestedURL = URL(string: decoded) {
+            return nestedURL.redactedForLogging()
+        }
+
+        return url.redactedForLogging()
     }
 }
 

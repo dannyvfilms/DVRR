@@ -19,14 +19,15 @@ struct LibraryMultiPickerView: View {
 
     var body: some View {
         ScrollView {
-            LazyVGrid(columns: columns, spacing: 24) {
+            LazyVGrid(columns: columns, spacing: 48) {
                 ForEach(libraries, id: \.uuid) { library in
                     LibraryCard(library: library, isSelected: selectedIDs.contains(library.uuid)) {
                         onToggle(library)
                     }
                 }
             }
-            .padding(.vertical, 16)
+            .padding(.vertical, 24)
+            .padding(.horizontal, 32)
         }
     }
 }
@@ -43,36 +44,59 @@ private struct LibraryCard: View {
             AppLoggers.channel.info("event=builder.library.tap libraryID=\(library.uuid, privacy: .public) title=\(library.title ?? "unknown", privacy: .public)")
             action()
         }) {
-            VStack(alignment: .leading, spacing: 12) {
-                HStack {
+            HStack(spacing: 0) {
+                Spacer(minLength: 0)
+                
+                // Content group (centered)
+                HStack(alignment: .center, spacing: 32) {
+                    // Icon on left
                     Image(systemName: iconName(for: library.type))
                         .font(.title2)
                         .foregroundStyle(Color.accentColor)
-                    Spacer()
+                        .frame(width: 40, height: 40)
+                    
+                    // Text stack in middle - much larger to fill icon height
+                    VStack(alignment: .leading, spacing: 0) {
+                        Text(library.title ?? "Library")
+                            .font(.system(size: 32, weight: .bold))
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.8)
+                            .frame(height: 32)
+                        
+                        Spacer(minLength: 0).frame(height: 4)
+                        
+                        Text(library.type.displayName)
+                            .font(.system(size: 24, weight: .medium))
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                            .frame(height: 24)
+                    }
+                    .frame(height: 60)
+                    .clipped()  // Hard clip at 60px
+                    
+                    // Checkmark on right
                     if isSelected {
                         Image(systemName: "checkmark.circle.fill")
                             .foregroundColor(.accentColor)
-                            .font(.title2)
+                            .font(.title3)
+                            .frame(width: 32, height: 32)
                     }
                 }
-                Text(library.title ?? "Library")
-                    .font(.headline)
-                    .lineLimit(2)
-                Text(library.type.displayName)
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
+                
+                Spacer(minLength: 0)
             }
-            .padding(20)
-            .frame(minHeight: 140, maxHeight: 140)
-            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, 24)
+            .padding(.vertical, 20)
+            .frame(height: 120)
             .background(background)
         }
         .buttonStyle(.plain)
         .buttonBorderShape(.roundedRectangle(radius: 18))
+        .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
         .focused($isFocused)
-        .scaleEffect(isFocused ? 1.03 : 1.0)  // Smaller scale to prevent overlap
+        .scaleEffect(isFocused ? 1.015 : 1.0)
         .animation(.easeInOut(duration: 0.15), value: isFocused)
-        .zIndex(isFocused ? 1 : 0)  // Bring focused card forward
+        .shadow(color: isFocused ? Color.accentColor.opacity(0.3) : .clear, radius: 12, x: 0, y: 4)
     }
 
     private var background: some View {
@@ -82,7 +106,6 @@ private struct LibraryCard: View {
                 RoundedRectangle(cornerRadius: 18, style: .continuous)
                     .stroke(isFocused || isSelected ? Color.accentColor : Color.clear, lineWidth: 3)
             )
-            .shadow(color: isFocused ? Color.accentColor.opacity(0.35) : .clear, radius: 12, x: 0, y: 4)
     }
 
     private func iconName(for type: PlexMediaType) -> String {

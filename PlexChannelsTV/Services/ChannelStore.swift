@@ -53,6 +53,7 @@ final class ChannelStore: ObservableObject {
         self.defaults = userDefaults
         self.fileManager = fileManager
         self.storageURL = ChannelStore.resolveStorageURL(using: fileManager)
+        AppLoggers.channel.info("event=channel.persist.path path=\(self.storageURL.path, privacy: .public)")
 
         isRestoring = true
 
@@ -114,7 +115,11 @@ final class ChannelStore: ObservableObject {
         }
 
         do {
-            let itemsResponse = try await plexService.fetchLibraryItems(for: library)
+            let targetType: PlexMediaType = library.type == .show ? .episode : library.type
+            let itemsResponse = try await plexService.fetchLibraryItems(
+                for: library,
+                mediaType: targetType
+            )
 
             var mediaItems = itemsResponse.compactMap(Channel.Media.from)
 
@@ -129,14 +134,14 @@ final class ChannelStore: ObservableObject {
             let channel = Channel(
                 name: customName ?? library.title ?? "Channel",
                 libraryKey: library.key,
-                libraryType: library.type,
+                libraryType: targetType,
                 scheduleAnchor: startAt,
                 items: mediaItems,
                 sourceLibraries: [Channel.SourceLibrary(
                     id: library.uuid,
                     key: library.key,
                     title: library.title,
-                    type: library.type
+                    type: targetType
                 )],
                 options: Channel.Options(shuffle: shuffle)
             )
@@ -187,15 +192,10 @@ final class ChannelStore: ObservableObject {
 
     private static func resolveStorageURL(using fileManager: FileManager) -> URL {
         let baseURL: URL
-        if let appSupport = try? fileManager.url(
-            for: .applicationSupportDirectory,
-            in: .userDomainMask,
-            appropriateFor: nil,
-            create: true
-        ) {
-            baseURL = appSupport
+        if let appSupport = fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask).first {
+            baseURL = appSupport.appendingPathComponent("Channels", isDirectory: true)
         } else if let documents = fileManager.urls(for: .documentDirectory, in: .userDomainMask).first {
-            baseURL = documents
+            baseURL = documents.appendingPathComponent("Channels", isDirectory: true)
         } else {
             baseURL = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
         }

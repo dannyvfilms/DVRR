@@ -158,18 +158,18 @@ private extension ChannelsView {
             .buttonStyle(.borderedProminent)
             .focused($headerAddFocused)
 
-            #if DEBUG
-            if let firstChannel = channelStore.channels.first {
-                Button {
-                    pendingFocusRestore = .now(firstChannel.id)
-                    _ = coordinator.presentForce(channel: firstChannel)
-                } label: {
-                    Label("Force Play Now", systemImage: "play.rectangle.fill")
-                        .font(.title3)
-                }
-                .buttonStyle(.borderless)
-            }
-            #endif
+            // #if DEBUG
+            // if let firstChannel = channelStore.channels.first {
+            //     Button {
+            //         pendingFocusRestore = .now(firstChannel.id)
+            //         _ = coordinator.presentForce(channel: firstChannel)
+            //     } label: {
+            //         Label("Force Play Now", systemImage: "play.rectangle.fill")
+            //             .font(.title3)
+            //     }
+            //     .buttonStyle(.borderless)
+            // }
+            // #endif
         }
     }
 
@@ -252,10 +252,12 @@ private extension ChannelsView {
 
         let media = position.media
         let offset = position.offset
-        let nowTitle = media.metadata?.title ?? media.title
+        let nowTitle = media.episodeTitle
+        let seasonNumber = media.metadata?.seasonNumber ?? 0
+        let episodeNumber = media.metadata?.episodeNumber ?? 0
 
         AppLoggers.channel.info(
-            "event=channel.tap.prepare channelID=\(channel.id.uuidString, privacy: .public) channelName=\(channel.name, privacy: .public) itemID=\(media.id, privacy: .public) itemTitle=\(nowTitle, privacy: .public) offsetSec=\(Int(offset))"
+            "event=channel.tap.prepare channelID=\(channel.id.uuidString, privacy: .public) channelName=\(channel.name, privacy: .public) itemID=\(media.id, privacy: .public) itemTitle=\(nowTitle, privacy: .public) s=\(seasonNumber) e=\(episodeNumber) offsetSec=\(Int(offset))"
         )
 
         pendingFocusRestore = .now(channel.id)
@@ -295,13 +297,35 @@ private extension ChannelsView {
                 source: .beginning,
                 at: timestamp
             )
+        case .delete:
+            AppLoggers.channel.info(
+                "event=channel.longPress action=delete channelID=\(channel.id.uuidString, privacy: .public) channelName=\(channel.name, privacy: .public)"
+            )
+
+            if coordinator.playbackRequest?.channelID == channel.id {
+                coordinator.dismissPlayback()
+            }
+
+            channelStore.removeChannel(channel)
+            pendingFocusRestore = nil
+            focusedCard = nil
+
+            if channelStore.channels.isEmpty {
+                headerAddFocused = true
+            }
+
+            AppLoggers.channel.info(
+                "event=channel.remove.ok channelID=\(channel.id.uuidString, privacy: .public) remaining=\(channelStore.channels.count)"
+            )
         }
     }
 
     func handlePlayItem(channel: Channel, media: Channel.Media) {
-        let itemTitle = media.metadata?.title ?? media.title
+        let itemTitle = media.episodeTitle
+        let seasonNumber = media.metadata?.seasonNumber ?? 0
+        let episodeNumber = media.metadata?.episodeNumber ?? 0
         AppLoggers.channel.info(
-            "event=channel.next.tap.received handler=handlePlayItem channelID=\(channel.id.uuidString, privacy: .public) channelName=\(channel.name, privacy: .public) itemID=\(media.id, privacy: .public) itemTitle=\(itemTitle, privacy: .public)"
+            "event=channel.next.tap.received handler=handlePlayItem channelID=\(channel.id.uuidString, privacy: .public) channelName=\(channel.name, privacy: .public) itemID=\(media.id, privacy: .public) itemTitle=\(itemTitle, privacy: .public) s=\(seasonNumber) e=\(episodeNumber)"
         )
 
         pendingFocusRestore = .now(channel.id)
@@ -348,6 +372,11 @@ private extension ChannelsView {
                 source: .beginning,
                 at: Date()
             )
+        case .delete:
+            AppLoggers.channel.info(
+                "event=channel.longPress action=delete source=upnext channelID=\(channel.id.uuidString, privacy: .public) channelName=\(channel.name, privacy: .public) itemID=\(media.id, privacy: .public)"
+            )
+            handleMenuAction(channel: channel, action: .delete)
         }
     }
 }

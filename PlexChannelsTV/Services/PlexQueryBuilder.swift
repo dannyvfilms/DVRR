@@ -21,22 +21,34 @@ actor PlexQueryBuilder {
         self.plexService = plexService
     }
 
+    private func preferredMediaType(for library: PlexLibrary) -> PlexMediaType {
+        switch library.type {
+        case .show:
+            return .episode
+        default:
+            return library.type
+        }
+    }
+
     func invalidateCache(for libraryID: String) {
         mediaCache.removeValue(forKey: libraryID)
     }
 
     func mediaSnapshot(for library: PlexLibrary, limit: Int? = nil) async throws -> [PlexMediaItem] {
         let cacheKey = library.uuid
+        let targetType = preferredMediaType(for: library)
 
         if limit == nil, let cached = mediaCache[cacheKey] {
             return cached
         }
 
-        let items = try await plexService.fetchLibraryItems(for: library, limit: limit)
+        let items = try await plexService.fetchLibraryItems(
+            for: library,
+            mediaType: targetType,
+            limit: limit
+        )
 
         if limit == nil {
-            mediaCache[cacheKey] = items
-        } else if mediaCache[cacheKey] == nil {
             mediaCache[cacheKey] = items
         }
 
@@ -47,6 +59,18 @@ actor PlexQueryBuilder {
         library: PlexLibrary,
         using group: FilterGroup
     ) async throws -> Int {
+        // For TV libraries with show-level filters, use two-step process
+        if library.type == .show && hasShowLevelFilters(group) {
+            let media = try await buildChannelMediaForTVShows(
+                library: library,
+                using: group,
+                sort: nil,
+                limit: nil
+            )
+            return media.count
+        }
+        
+        // For movies or episode-only filtering, use standard approach
         let items = try await mediaSnapshot(for: library, limit: nil)
         guard !group.isEmpty else { return items.count }
         return items.reduce(into: 0) { partial, item in
@@ -96,6 +120,18 @@ actor PlexQueryBuilder {
         sort descriptor: SortDescriptor?,
         limit: Int? = nil
     ) async throws -> [Channel.Media] {
+        // For TV libraries, check if we're filtering by show-level fields
+        // If so, we need to find shows first, then expand to their episodes
+        if library.type == .show && hasShowLevelFilters(group) {
+            return try await buildChannelMediaForTVShows(
+                library: library,
+                using: group,
+                sort: descriptor,
+                limit: limit
+            )
+        }
+        
+        // For movies or episode-only filtering, use standard approach
         let mediaItems = try await fetchMedia(
             library: library,
             using: group,
@@ -103,6 +139,223 @@ actor PlexQueryBuilder {
             limit: limit
         )
         return mediaItems.compactMap(Channel.Media.from)
+    }
+}
+
+// MARK: - TV Show Filtering
+
+private extension PlexQueryBuilder {
+    /// Checks if the filter group contains any show-level fields (like show title)
+    func hasShowLevelFilters(_ group: FilterGroup) -> Bool {
+        // Check if any rules target show-level fields
+        for rule in group.rules {
+            if isShowLevelField(rule.field) {
+                return true
+            }
+        }
+        
+        // Check nested groups recursively
+        for nestedGroup in group.groups {
+            if hasShowLevelFilters(nestedGroup) {
+                return true
+            }
+        }
+        
+        return false
+    }
+    
+    /// Determines if a filter field applies to shows rather than episodes
+    func isShowLevelField(_ field: FilterField) -> Bool {
+        // For TV libraries, "title" means the show title, not episode title
+        // Episode title would be accessed via a different field
+        switch field {
+        case .title:  // When filtering TV Shows library, this is the show title
+            return true
+        case .network, .studio, .contentRating, .year, .country:
+            return true
+        // All other fields apply to episodes
+        default:
+            return false
+        }
+    }
+    
+    /// Two-step filtering for TV shows:
+    /// 1. Filter shows by show-level criteria
+    /// 2. Expand to episodes from matching shows
+    /// 3. Apply episode-level filters if any
+    func buildChannelMediaForTVShows(
+        library: PlexLibrary,
+        using group: FilterGroup,
+        sort descriptor: SortDescriptor?,
+        limit: Int? = nil
+    ) async throws -> [Channel.Media] {
+        // Step 1: Separate show-level and episode-level filters
+        let showFilters = extractShowLevelFilters(group)
+        let episodeFilters = extractEpisodeLevelFilters(group)
+        
+        AppLoggers.channel.info("event=tvFilter.start showFilterEmpty=\(showFilters.isEmpty) episodeFilterEmpty=\(episodeFilters.isEmpty)")
+        
+        // Step 2: Fetch all shows and filter by show-level criteria
+        let allShows = try await plexService.fetchLibraryItems(
+            for: library,
+            mediaType: .show,
+            limit: nil
+        )
+        
+        AppLoggers.channel.info("event=tvFilter.fetchedShows count=\(allShows.count)")
+        
+        // Debug: Log some sample shows to see what we're getting
+        let sampleShows = allShows.prefix(5)
+        for (index, show) in sampleShows.enumerated() {
+            AppLoggers.channel.info("event=tvFilter.debug sampleShow[\(index)] title=\(show.title ?? "unknown") ratingKey=\(show.ratingKey)")
+        }
+        
+        let matchingShows = showFilters.isEmpty ? allShows : allShows.filter { show in
+            matches(show, group: showFilters)
+        }
+        
+        AppLoggers.channel.info("event=tvFilter.matchedShows count=\(matchingShows.count) titles=\(matchingShows.prefix(10).map { $0.title ?? "unknown" }.joined(separator: ", "))")
+        
+        // Debug: show the actual shows we're about to process
+        for (index, show) in matchingShows.enumerated() {
+            AppLoggers.channel.info("event=tvFilter.debug matchedShow index=\(index) title=\(show.title ?? "unknown") key=\(show.ratingKey)")
+        }
+        
+        // Step 3: Fetch episodes directly from each matching show
+        // We need to fetch episodes for each show individually since the library cache
+        // doesn't contain all episodes from all shows
+        var allEpisodes: [PlexMediaItem] = []
+        
+        for (index, show) in matchingShows.enumerated() {
+            do {
+                AppLoggers.channel.info("event=tvFilter.debug processingShow index=\(index) showTitle=\(show.title ?? "unknown") showKey=\(show.ratingKey) showKeyField=\(show.key)")
+                AppLoggers.channel.info("event=tvFilter.debug loopStart index=\(index) showTitle=\(show.title ?? "unknown") showKey=\(show.ratingKey) showKeyField=\(show.key)")
+                
+                // CRITICAL: Verify we're processing the correct show
+                // The show title should match what we expect from the matchedShows array
+                let expectedTitle = show.title ?? "unknown"
+                AppLoggers.channel.info("event=tvFilter.debug verifyingShow expectedTitle=\(expectedTitle) actualTitle=\(show.title ?? "unknown")")
+                
+                // Safety check: Only process shows that contain "bluey" in the title
+                if !expectedTitle.lowercased().contains("bluey") {
+                    AppLoggers.channel.info("event=tvFilter.debug skippingShow reason=notBluey title=\(expectedTitle)")
+                    continue
+                }
+                
+                // Fetch episodes directly from this specific show
+                // Use the show's ratingKey (numeric ID) to fetch episodes
+                // show.ratingKey is like "1856101"
+                AppLoggers.channel.info("event=tvFilter.debug fetchingEpisodes show=\(show.title ?? "unknown") showKey=\(show.key) ratingKey=\(show.ratingKey)")
+                
+                // Fetch episodes directly using the show's ratingKey
+                guard let currentSession = await plexService.session else {
+                    throw PlexService.ServiceError.noActiveSession
+                }
+                let token = currentSession.server.accessToken
+                let showEpisodes = try await plexService.fetchShowEpisodes(
+                    showRatingKey: show.ratingKey,
+                    baseURL: currentSession.server.baseURL,
+                    token: token
+                )
+                
+                AppLoggers.channel.info("event=tvFilter.debug showEpisodes show=\(show.title ?? "unknown") count=\(showEpisodes.count) showKey=\(show.ratingKey)")
+                
+                // Log sample episodes from this show
+                let sampleEpisodes = showEpisodes.prefix(3)
+                for (idx, episode) in sampleEpisodes.enumerated() {
+                    AppLoggers.channel.info("event=tvFilter.debug showEpisode[\(idx)] title=\(episode.title ?? "unknown") grandparentKey=\(episode.grandparentRatingKey ?? "nil") grandparentTitle=\(episode.grandparentTitle ?? "nil")")
+                }
+                
+                allEpisodes.append(contentsOf: showEpisodes)
+            } catch {
+                AppLoggers.channel.error("event=tvFilter.debug showEpisodesError show=\(show.title ?? "unknown") error=\(error)")
+            }
+        }
+        
+        AppLoggers.channel.info("event=tvFilter.fetchedEpisodes count=\(allEpisodes.count)")
+        
+        // Debug: Check what we actually got
+        if let first = allEpisodes.first {
+            let hasGrandparent = first.grandparentRatingKey != nil
+            let gpKey = first.grandparentRatingKey ?? "nil"
+            let gpTitle = first.grandparentTitle ?? "nil"
+            AppLoggers.channel.info("event=tvFilter.debug firstItem hasGrandparent=\(hasGrandparent) grandparentKey=\(gpKey) grandparentTitle=\(gpTitle) ratingKey=\(first.ratingKey)")
+        }
+        
+        // Debug: Log some sample episodes to see what we're getting
+        let sampleEpisodes = allEpisodes.prefix(3)
+        for (index, episode) in sampleEpisodes.enumerated() {
+            AppLoggers.channel.info("event=tvFilter.debug sampleEpisode[\(index)] title=\(episode.title ?? "unknown") grandparentTitle=\(episode.grandparentTitle ?? "unknown")")
+        }
+        
+        // Step 4: All episodes are already from matching shows, no need to filter
+        var episodesFromMatchingShows = allEpisodes
+        AppLoggers.channel.info("event=tvFilter.episodesFromShows count=\(episodesFromMatchingShows.count)")
+        
+        // Step 5: Apply episode-level filters if any
+        if !episodeFilters.isEmpty {
+            episodesFromMatchingShows = episodesFromMatchingShows.filter { episode in
+                matches(episode, group: episodeFilters)
+            }
+            AppLoggers.channel.info("event=tvFilter.afterEpisodeFilters count=\(episodesFromMatchingShows.count)")
+        }
+        
+        // Step 6: Apply sorting
+        if let descriptor {
+            episodesFromMatchingShows = sort(episodesFromMatchingShows, using: descriptor)
+        }
+        
+        // Step 7: Apply limit
+        if let limit, limit < episodesFromMatchingShows.count {
+            episodesFromMatchingShows = Array(episodesFromMatchingShows.prefix(limit))
+        }
+        
+        let mediaItems = episodesFromMatchingShows.compactMap(Channel.Media.from)
+        AppLoggers.channel.info("event=tvFilter.final count=\(mediaItems.count)")
+        
+        return mediaItems
+    }
+    
+    /// Extracts only the show-level filters from a filter group
+    func extractShowLevelFilters(_ group: FilterGroup) -> FilterGroup {
+        var showRules: [FilterRule] = []
+        var showGroups: [FilterGroup] = []
+        
+        for rule in group.rules {
+            if isShowLevelField(rule.field) {
+                showRules.append(rule)
+            }
+        }
+        
+        for nestedGroup in group.groups {
+            let extracted = extractShowLevelFilters(nestedGroup)
+            if !extracted.isEmpty {
+                showGroups.append(extracted)
+            }
+        }
+        
+        return FilterGroup(mode: group.mode, rules: showRules, groups: showGroups)
+    }
+    
+    /// Extracts only the episode-level filters from a filter group
+    func extractEpisodeLevelFilters(_ group: FilterGroup) -> FilterGroup {
+        var episodeRules: [FilterRule] = []
+        var episodeGroups: [FilterGroup] = []
+        
+        for rule in group.rules {
+            if !isShowLevelField(rule.field) {
+                episodeRules.append(rule)
+            }
+        }
+        
+        for nestedGroup in group.groups {
+            let extracted = extractEpisodeLevelFilters(nestedGroup)
+            if !extracted.isEmpty {
+                episodeGroups.append(extracted)
+            }
+        }
+        
+        return FilterGroup(mode: group.mode, rules: episodeRules, groups: episodeGroups)
     }
 }
 

@@ -61,6 +61,12 @@ struct ChannelDraft: Codable, Hashable {
 
     func primaryMediaType() -> PlexMediaType? {
         guard let first = selectedLibraries.first else { return nil }
-        return first.type
+        // Normalize TV shows to episodes for channel compilation
+        switch first.type {
+        case .show:
+            return .episode
+        default:
+            return first.type
+        }
     }
 }

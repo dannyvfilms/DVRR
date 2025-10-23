@@ -245,10 +245,13 @@ Button { action } label: {
 #### Channel Builder Views (`Views/ChannelBuilder/`)
 
 **`ChannelBuilderFlowView`** (Main Wizard)
-- **Presentation**: Full-screen cover with opaque black background
-- **Steps**: Libraries → Rules (per library) → Sort → Review
+- **Presentation**: Full-screen cover with `.regularMaterial` background
+- **Steps**: Libraries → Rules (per library) → Sort & Review (combined)
 - **Navigation**: "Back" / "Next" / "Create Channel" buttons in footer
-- **Important**: Must use `.background(Color.black)` (not transparent) to hide channels view behind it
+- **Preview Row**: Shows first 20 filtered items on Steps 2 & 3 (non-focusable, updates as filters change)
+- **Focus Sections**: Separate focus sections for content, preview, and footer for better navigation
+- **Scrolling**: Main ScrollView wraps all content, preview, and footer - entire page scrolls as one unit
+- **Important**: Must use opaque background to hide channels view behind it
 
 **`LibraryMultiPickerView`** (Step 1)
 - Grid of library cards with checkmarks for selection
@@ -257,28 +260,60 @@ Button { action } label: {
 
 **`RuleGroupBuilderView`** (Step 2)
 - One instance per selected library
-- Header shows "Step 2 · Rules (X of Y)" with live item count badge
-- Top row: "Match All" / "Match Any" segmented control
-- Rule list: Each row has Field ▾, Operator ▾, Value editor
+- **No internal ScrollView**: Content expands to full height, parent handles scrolling
+- **Consistent spacing**: 24px between "Step 2" title and rule builder, 24px between rule builder and Channel Preview
+- **Control Row** (24px spacing between buttons): 
+  - "Match All/Any" toggle button (340px wide, focus-managed with 1.015 scale)
+  - "Add Filter" button (220px wide, + icon, focus-managed)
+  - "Add Group" button (220px wide, ... icon, focus-managed)
+  - All buttons use `.plain` style with custom backgrounds, `.clipShape()` before `.scaleEffect()`, and 8px shadow
+  - Buttons have padding: horizontal 20px, vertical 12px
+- **Rule Rows** (20px spacing in HStack): Each row in a container with padding/background
+  - Field dropdown (240px) - Menu with all available fields, focus-managed, single background layer
+  - Operator dropdown (240px) - Menu wider to fit "Does Not Contain" etc., focus-managed, single background layer
+  - Value editor (180-300px depending on type), focus-managed for enum menus
+  - Trash button (70px × 50px, red tint, focus-managed with 1.015 scale, padding: 16px horizontal, 12px vertical)
+  - All menus use `.clipShape()`, `.scaleEffect(1.015)`, and 6px shadow on focus
+  - Menus have background applied at button level (not label level) to avoid double rectangles
 - Value editor adapts to field type:
-  - Text: TextField
-  - Number: TextField with numeric keyboard
-  - Date: DateValuePicker with quick picks (last 7/30/90 days)
-  - Enum (multi): Token field with chips
-  - Boolean: Toggle
-- Actions: "Add Filter" button, "Add Group" button (for nested logic)
+  - Text: TextField (300px)
+  - Number: TextField (180px)
+  - Date: DateValuePicker with quick picks (last 7/30/90 days, 300px)
+  - Enum (multi/single): Dropdown menu with checkmarks (300px), focus-managed
+  - Boolean: Toggle (180px)
+- **Nested Groups**: Indented by 40px per level, with background on level > 0
 - Live count debounced (250-400ms) to avoid excessive API calls
+- **Button Best Practices Applied**: All buttons follow Critical Pattern #7 to prevent clipping
 
-**`SortPickerView`** (Step 3)
-- List of available sorts for the primary library type
-- ASC/DESC toggle where applicable
-- Defaults: Movies → Title (ASC), TV → Episode Air Date (DESC)
+**`SortPickerView`** (Step 3 - Sort & Review Combined)
+- **Sorting Section**:
+  - List of available sorts for the primary library type
+  - ASC/DESC toggle where applicable
+  - Shuffle toggle
+  - Defaults: Movies → Title (ASC), TV → Episode Air Date (DESC)
+- **Review Section**:
+  - Editable channel name field
+  - Total items count (auto-calculated from filters)
+  - Per-library breakdown with item counts
+- **Layout**: Divider separates sorting from review sections
+- **Button**: "Create Channel" (replaces old Step 4)
 
-**`ChannelBuilderReviewView`** (Step 4)
-- Shows draft name (editable TextField)
-- Summary: libraries selected, total items estimate
-- Per-library rule counts
-- "Create Channel" button triggers compilation
+**`ChannelPreviewRow`** (Preview Component)
+- **Purpose**: Shows live preview of filtered channel content
+- **Display**: Horizontal scrolling row of 2:3 poster cards (180×270px) with title below
+- **Header**: "Channel Preview" on left, item count badge on right (with `Spacer()` between)
+- **Behavior**: 
+  - Non-focusable (`.focusable(false)`) - navigation skips over it
+  - Fetches first 20 items matching current filters via `viewModel.fetchPreviewMedia()`
+  - Updates automatically when filters change (debounced)
+  - Shows placeholder posters (8) with photo icon when no items match filters
+- **Appears**: Steps 2 (Rules) and 3 (Sort & Review) above footer buttons
+- **Implementation**: Matches "Up Next" row structure from main channels view
+  - Poster (180×270px) on top
+  - Title caption text below poster (left-aligned)
+  - 24px spacing between posters
+  - 8px spacing between poster and title
+  - Placeholder posters: RoundedRectangle with photo icon overlay
 
 **Channel Compilation Process**:
 1. For each library, execute filter group via `PlexQueryBuilder.buildChannelMedia()`
@@ -416,6 +451,239 @@ var body: some View {
 - Must explicitly set opaque background to hide the view beneath
 - `.frame(maxWidth: .infinity, maxHeight: .infinity)` ensures background fills entire screen
 - Applies to: `ChannelBuilderFlowView`, any custom modal presentations
+
+### 7. Button Scaling & Clipping Prevention
+
+**The Problem**: tvOS buttons scale on focus (typically 1.5-2%), and shadows extend beyond button bounds. Both the **internal layout**, **grid spacing**, and **container padding** must accommodate the scale effect AND shadow radius to prevent clipping.
+
+**❌ WRONG** (causes shadow clipping):
+```swift
+LazyVGrid(columns: columns, spacing: 24) {  // ← Too tight for shadow!
+    Button { action } label: {
+        VStack {
+            HStack {
+                Image(systemName: "icon")  // ← No fixed size
+                Text("Text")  // ← No constraints
+            }
+            .padding(16)  // ← Content touching edges
+        }
+        .frame(height: 140)
+    }
+}
+.padding(.horizontal, 16)  // ← Not enough! Shadow clips at edges!
+.scaleEffect(isFocused ? 1.05 : 1.0)  // ← Too much scale
+.shadow(radius: 12)  // ← Shadow gets clipped!
+```
+
+**✅ RIGHT**:
+```swift
+LazyVGrid(columns: columns, spacing: 48) {  // ← Space for scale + shadow!
+    Button { action } label: {
+        HStack(alignment: .center, spacing: 20) {  // ← Horizontal layout
+            Image(systemName: "icon")
+                .frame(width: 40, height: 40)  // ← Fixed size
+            
+            VStack(alignment: .leading, spacing: 4) {
+                Text(item.title)
+                    .lineLimit(1)  // ← Constrained
+                    .minimumScaleFactor(0.85)
+                Text(item.subtitle)
+                    .font(.subheadline)
+            }
+            .frame(maxHeight: 40)  // ← Match icon height
+            
+            if isSelected {
+                Image(systemName: "checkmark.circle.fill")
+                    .frame(width: 32, height: 32)
+            }
+        }
+        .padding(.horizontal, 24)  // ← Internal padding
+        .padding(.vertical, 20)
+        .frame(height: 120)
+        .background(background)
+    }
+}
+.padding(.horizontal, 32)  // ← Container padding (2.5× shadow)
+.clipShape(RoundedRectangle(cornerRadius: 18))
+.scaleEffect(isFocused ? 1.015 : 1.0)  // ← Conservative 1.5% scale
+.shadow(radius: 12)  // ← Shadow won't clip!
+```
+
+**Key Rules**:
+1. **Shadow Spacing Formula**: `grid_spacing ≥ scale_buffer + (2 × shadow_radius) + visual_gap`
+   - Scale buffer: ~10px for 1.5% on 300px cards
+   - Shadow: 2 × 12px = 24px
+   - Visual gap: 10-15px
+   - **Total: 44-50px** (use 48px)
+
+2. **Container Padding Formula**: `padding ≥ 2.5 × shadow_radius` (round up for safety)
+   - For 12px shadow: **32px padding** (allows for shadow blur + tolerance)
+   - Critical: Shadow blur extends beyond nominal radius
+   - Prevents edge shadow clipping
+
+3. **Scale factor: 1.015-1.02 max**: More than 2% risks overlap even with good spacing
+
+4. **Internal padding**: Separate from container padding
+   - Horizontal: **24px minimum** (prevents content from touching edges)
+   - Vertical: **20px** (adequate breathing room)
+   - Spacing between elements: **20px** (icon to text stack)
+
+5. **Content height constraints**: Text must not exceed icon height
+   - Icon: 40px fixed
+   - Text stack: `maxHeight: 40px` (constrained to icon)
+   - Use `.lineLimit(1)` on title to prevent overflow
+
+6. **Horizontal layouts preferred**: Icon left, text middle, action right (not vertical)
+
+7. **Clip before scaling**: Apply `.clipShape()` before `.scaleEffect()` 
+
+8. **Shadow after everything**: Shadow applied last to avoid cutoff edges
+
+9. **Fixed element sizes**: All icons/images need explicit frames
+
+10. **Text constraints**: Use `.lineLimit()` + `.minimumScaleFactor()` on all text
+
+**Example (Grid Cards - COMPLETE)**:
+```swift
+ScrollView {
+    LazyVGrid(columns: [.flexible(), .flexible(), .flexible()], spacing: 48) {
+        ForEach(items) { item in
+            Button(action: { }) {
+                HStack(alignment: .center, spacing: 20) {
+                    // Icon on left
+                    Image(systemName: "icon")
+                        .font(.title2)
+                        .frame(width: 40, height: 40)
+                    
+                    // Text stack in middle - constrained to icon height
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(item.title)
+                            .font(.headline)
+                            .lineLimit(1)  // Single line to fit in 40px
+                            .minimumScaleFactor(0.85)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                        
+                        Text(item.subtitle)
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    .frame(maxHeight: 40)  // Constrain to icon height
+                    
+                    // Action on right
+                    if isSelected {
+                        Image(systemName: "checkmark.circle.fill")
+                            .font(.title3)
+                            .frame(width: 32, height: 32)
+                    }
+                }
+                .padding(.horizontal, 24)  // Internal padding
+                .padding(.vertical, 20)
+                .frame(height: 120)
+                .frame(maxWidth: .infinity, alignment: .center)
+                .background(background)
+            }
+            .clipShape(RoundedRectangle(cornerRadius: 18))
+            .focused($isFocused)
+            .scaleEffect(isFocused ? 1.015 : 1.0)
+            .shadow(color: isFocused ? .accentColor : .clear, radius: 12, x: 0, y: 4)
+        }
+    }
+    .padding(.vertical, 24)
+    .padding(.horizontal, 32)  // Container padding (2.5× shadow radius)
+}
+```
+
+**Example (Rule Row with Trash Button)**:
+```swift
+HStack(spacing: 16) {
+    Menu { /* field options */ } label: {
+        HStack {
+            Text(field.displayName).lineLimit(1)
+            Spacer()
+            Image(systemName: "chevron.down")
+        }
+        .frame(width: 220)  // Fixed width prevents clipping
+        .padding()
+        .background(Color.white.opacity(0.12))
+    }
+    .buttonStyle(.plain)
+    
+    Button(role: .destructive, action: onRemove) {
+        Image(systemName: "trash")
+            .frame(width: 50, height: 44)
+    }
+    .buttonStyle(.bordered)
+}
+.padding()  // Container padding prevents row overlap
+.background(Color.white.opacity(0.04))
+```
+
+**Critical Distinction: Internal vs Container Padding**:
+```
+Internal Padding (.padding() inside button):
+- Purpose: Keeps content away from button edges
+- Horizontal: 24px minimum (icon/text won't touch sides)
+- Vertical: 20px (adequate breathing room)
+- Applied INSIDE the button label
+
+Container Padding (.padding() on grid):
+- Purpose: Prevents shadow clipping at screen edges
+- Horizontal: 32px (2.5× shadow radius)
+- Vertical: 24px
+- Applied OUTSIDE the grid, on ScrollView content
+```
+
+**Math Examples**:
+
+**1. Content Height Calculation**:
+```
+Card with frame(height: 120) and padding(20):
+- Available content height: 120 - (20 top + 20 bottom) = 80px
+
+Content in HStack (horizontal):
+- Icon: 40px
+- Text stack: ~40px (headline 20px + spacing 6px + subheadline 14px)
+- TOTAL: 40px (icon determines height, text fits within)
+- Result: 40px ≤ 80px available ✓
+
+Vertical layout would need more height:
+- Icon row: 40px + spacing: 10px + Title: 44px + spacing: 6px + Subtitle: 20px
+- TOTAL: 120px > 80px available ✗ (CLIPS!)
+```
+
+**2. Shadow Spacing Calculation**:
+```
+For 12px shadow radius + 1.5% scale on ~300px cards:
+
+Scale buffer:
+- 300px × 0.015 = 4.5px growth per side = ~10px total buffer
+
+Shadow space needed:
+- 12px radius extends on all sides = 2 × 12px = 24px between cards
+
+Visual separation:
+- Minimum 10-15px for comfortable spacing
+
+Total grid spacing needed:
+- 10px (scale) + 24px (shadow) + 15px (visual) = 49px
+- Use 48px (clean number)
+
+Container padding needed:
+- Shadow blur extends beyond nominal radius
+- 12px shadow → **32px padding** (2.5× shadow, rounded up)
+- Critical: This prevents edge clipping even with shadow blur
+```
+
+**Common Symptoms**:
+- Buttons "cut off" when focused
+- Content overflows button bounds
+- Shadows have straight edges instead of rounded corners
+- Text disappears or truncates on focus
+- Buttons overlap neighboring elements
+- "Invalid absolute dimension" warnings in console
+
+**Applies to**: All custom buttons, cards, menus, and interactive elements in the Channel Builder and throughout the app.
 
 ---
 
@@ -790,7 +1058,19 @@ subsystem:PlexChannelsTV eventMessage:CONTAINS "404"
 - ✅ **New models**: `FilterGroup`, `FilterRule`, `FilterOperator`, `FilterField`, `ChannelDraft`
 - ✅ **New views**: `ChannelBuilderFlowView`, `LibraryMultiPickerView`, `RuleGroupBuilderView`, `SortPickerView`
 
+**v1.1.1** (Task 31.1 - UI Refinements):
+- ✅ **Button scaling fixes** - Systemic fix for button clipping/overflow issues across entire app
+- ✅ **Library cards redesign** - Fixed icons, proper text scaling, consistent sizing
+- ✅ **Rule builder improvements** - Wider fields (220px+), consistent button sizes, better spacing
+- ✅ **Trash button integration** - Moved inside rule rows with consistent `.bordered` styling
+- ✅ **Combined Sort & Review** - Step 3 now includes both sorting and review for streamlined UX
+- ✅ **Channel preview row** - Live poster preview (20 items) on Steps 2 & 3 showing filtered results
+- ✅ **Focus navigation** - Added `.focusSection()` for better vertical/horizontal navigation
+- ✅ **Reduced logging noise** - Silenced successful artwork/image load logs (errors still logged)
+- ✅ **New component**: `ChannelPreviewRow` - Non-focusable horizontal poster scrolling
+- ✅ **Critical Pattern #7** - Documented button scaling/clipping prevention in AGENTS.md
+
 ---
 
-**Last Updated**: Task 31 (2025-10-22)  
-**Status**: Channel Builder Complete - Advanced filtering with Plex-style wizard, all features working
+**Last Updated**: Task 31.1 (2025-10-22)  
+**Status**: Channel Builder UI refinements complete - Fixed systemic button issues, added preview row, combined steps 3 & 4

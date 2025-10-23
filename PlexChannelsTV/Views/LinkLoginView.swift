@@ -113,6 +113,7 @@ struct LinkLoginView: View {
         pollTask = nil
         invalidateTimers()
         statusMessage = nil
+        authState.prepareForLinking()
         authState.linkingError = nil
 
         guard !authState.isLinked else {

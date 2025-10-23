@@ -6,6 +6,7 @@
 //
 
 import Foundation
+import PlexKit
 
 enum ResourceXMLParser {
     static func parseDevices(from data: Data) throws -> [ResourceDevice] {
@@ -19,6 +20,7 @@ enum ResourceXMLParser {
 
         return parser.devices
     }
+    
 }
 
 private final class XMLResourceParser: NSObject, XMLParserDelegate {

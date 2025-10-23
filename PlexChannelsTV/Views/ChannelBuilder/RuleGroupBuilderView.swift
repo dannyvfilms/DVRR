@@ -18,44 +18,21 @@ struct RuleGroupBuilderView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 24) {
-            header
-
-            ScrollView {
-                VStack(alignment: .leading, spacing: 24) {
-                    GroupEditor(
-                        group: $spec.rootGroup,
-                        level: 0,
-                        library: library,
-                        availableFields: availableFields,
-                        filterCatalog: filterCatalog,
-                        onGroupChange: { updatedGroup in
-                            spec.rootGroup = updatedGroup
-                        }
-                    )
+            GroupEditor(
+                group: $spec.rootGroup,
+                level: 0,
+                library: library,
+                availableFields: availableFields,
+                filterCatalog: filterCatalog,
+                onGroupChange: { updatedGroup in
+                    spec.rootGroup = updatedGroup
                 }
-                .padding(.vertical, 10)
-            }
+            )
         }
+        .padding(.horizontal, 32)  // Container padding (2.5× shadow radius) to prevent clipping
+        .padding(.vertical, 16)
         .onChange(of: spec) { _, newValue in
             onSpecChange(newValue)
-        }
-    }
-
-    private var header: some View {
-        HStack(alignment: .center, spacing: 16) {
-            VStack(alignment: .leading, spacing: 6) {
-                Text(library.title ?? "Library")
-                    .font(.title3.bold())
-                Text(library.type.displayName)
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
-            }
-
-            Spacer()
-
-            if let countState {
-                CountBadge(state: countState)
-            }
         }
     }
 }
@@ -70,11 +47,19 @@ private struct GroupEditor: View {
 
     private let spacing: CGFloat = 20
     private let indent: CGFloat = 40
+    
+    @FocusState private var focusedButton: FocusedControlButton?
+    
+    private enum FocusedControlButton: Hashable {
+        case modeToggle
+        case addFilter
+        case addGroup
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: spacing) {
-            // Control row: Mode toggle + Add buttons
-            HStack(spacing: 12) {
+            // Control row: Mode toggle + Add buttons (fixed width buttons with proper spacing)
+            HStack(spacing: 24) {
                 // Toggle button for Match All/Any
                 Button {
                     group.mode = group.mode == .all ? .any : .all
@@ -82,29 +67,72 @@ private struct GroupEditor: View {
                 } label: {
                     Text(group.mode == .all ? "Match all of the following" : "Match any of the following")
                         .font(.callout.weight(.medium))
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.9)
+                        .frame(width: 340, alignment: .center)
+                        .padding(.horizontal, 20)
+                        .padding(.vertical, 12)
                 }
-                .buttonStyle(.bordered)
-                .tint(.secondary)
+                .buttonStyle(.plain)
+                .background(
+                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                        .fill(Color.white.opacity(focusedButton == .modeToggle ? 0.15 : 0.10))
+                )
+                .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                .focused($focusedButton, equals: .modeToggle)
+                .scaleEffect(focusedButton == .modeToggle ? 1.015 : 1.0)
+                .shadow(color: focusedButton == .modeToggle ? .accentColor.opacity(0.3) : .clear, radius: 8, x: 0, y: 2)
+                .animation(.easeInOut(duration: 0.15), value: focusedButton == .modeToggle)
                 
                 // Add Filter button
                 Button {
                     addFilter()
                 } label: {
-                    Image(systemName: "plus")
-                        .imageScale(.small)
+                    HStack(spacing: 8) {
+                        Image(systemName: "plus")
+                            .imageScale(.small)
+                        Text("Add Filter")
+                            .font(.callout)
+                            .lineLimit(1)
+                    }
+                    .frame(width: 220)
+                    .padding(.vertical, 12)
                 }
-                .buttonStyle(.bordered)
-                .tint(.secondary)
+                .buttonStyle(.plain)
+                .background(
+                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                        .fill(Color.white.opacity(focusedButton == .addFilter ? 0.15 : 0.10))
+                )
+                .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                .focused($focusedButton, equals: .addFilter)
+                .scaleEffect(focusedButton == .addFilter ? 1.015 : 1.0)
+                .shadow(color: focusedButton == .addFilter ? .accentColor.opacity(0.3) : .clear, radius: 8, x: 0, y: 2)
+                .animation(.easeInOut(duration: 0.15), value: focusedButton == .addFilter)
                 
                 // Add Group button
                 Button {
                     addGroup()
                 } label: {
-                    Image(systemName: "ellipsis")
-                        .imageScale(.small)
+                    HStack(spacing: 8) {
+                        Image(systemName: "ellipsis")
+                            .imageScale(.small)
+                        Text("Add Group")
+                            .font(.callout)
+                            .lineLimit(1)
+                    }
+                    .frame(width: 220)
+                    .padding(.vertical, 12)
                 }
-                .buttonStyle(.bordered)
-                .tint(.secondary)
+                .buttonStyle(.plain)
+                .background(
+                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                        .fill(Color.white.opacity(focusedButton == .addGroup ? 0.15 : 0.10))
+                )
+                .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                .focused($focusedButton, equals: .addGroup)
+                .scaleEffect(focusedButton == .addGroup ? 1.015 : 1.0)
+                .shadow(color: focusedButton == .addGroup ? .accentColor.opacity(0.3) : .clear, radius: 8, x: 0, y: 2)
+                .animation(.easeInOut(duration: 0.15), value: focusedButton == .addGroup)
             }
             .padding(.leading, CGFloat(level) * indent)
 
@@ -222,10 +250,19 @@ private struct FilterRuleEditor: View {
     @State private var textValue: String = ""
     @State private var dateValue: Date = Date()
     @State private var relativePreset: RelativeDatePreset = .last30Days
+    
+    @FocusState private var focusedField: FocusedRuleField?
+    
+    private enum FocusedRuleField: Hashable {
+        case fieldPicker
+        case operatorPicker
+        case valuePicker
+        case trashButton
+    }
 
     var body: some View {
-        HStack(alignment: .center, spacing: 12) {
-            // Field picker - dropdown menu
+        HStack(alignment: .center, spacing: 20) {
+            // Field picker - dropdown menu with focus handling
             Menu {
                 ForEach(availableFields, id: \.self) { field in
                     Button {
@@ -237,23 +274,30 @@ private struct FilterRuleEditor: View {
                     }
                 }
             } label: {
-                HStack {
+                HStack(spacing: 8) {
                     Text(rule.field.displayName)
                         .lineLimit(1)
+                        .minimumScaleFactor(0.9)
+                    Spacer(minLength: 8)
                     Image(systemName: "chevron.down")
                         .imageScale(.small)
                 }
-                .frame(width: 200, alignment: .leading)
+                .frame(width: 240, alignment: .leading)
                 .padding(.horizontal, 16)
-                .padding(.vertical, 10)
-                .background(
-                    RoundedRectangle(cornerRadius: 10, style: .continuous)
-                        .fill(Color.white.opacity(0.12))
-                )
+                .padding(.vertical, 12)
             }
             .buttonStyle(.plain)
+            .background(
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .fill(Color.white.opacity(focusedField == .fieldPicker ? 0.18 : 0.12))
+            )
+            .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+            .focused($focusedField, equals: .fieldPicker)
+            .scaleEffect(focusedField == .fieldPicker ? 1.015 : 1.0)
+            .shadow(color: focusedField == .fieldPicker ? .accentColor.opacity(0.3) : .clear, radius: 6, x: 0, y: 2)
+            .animation(.easeInOut(duration: 0.15), value: focusedField == .fieldPicker)
             
-            // Operator picker - dropdown menu
+            // Operator picker - dropdown menu with focus handling
             Menu {
                 ForEach(rule.field.supportedOperators, id: \.self) { op in
                     Button {
@@ -264,32 +308,57 @@ private struct FilterRuleEditor: View {
                     }
                 }
             } label: {
-                HStack {
+                HStack(spacing: 8) {
                     Text(rule.op.displayName)
                         .lineLimit(1)
+                        .minimumScaleFactor(0.9)
+                    Spacer(minLength: 8)
                     Image(systemName: "chevron.down")
                         .imageScale(.small)
                 }
-                .frame(width: 180, alignment: .leading)
+                .frame(width: 240, alignment: .leading)
                 .padding(.horizontal, 16)
-                .padding(.vertical, 10)
-                .background(
-                    RoundedRectangle(cornerRadius: 10, style: .continuous)
-                        .fill(Color.white.opacity(0.12))
-                )
+                .padding(.vertical, 12)
             }
             .buttonStyle(.plain)
+            .background(
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .fill(Color.white.opacity(focusedField == .operatorPicker ? 0.18 : 0.12))
+            )
+            .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+            .focused($focusedField, equals: .operatorPicker)
+            .scaleEffect(focusedField == .operatorPicker ? 1.015 : 1.0)
+            .shadow(color: focusedField == .operatorPicker ? .accentColor.opacity(0.3) : .clear, radius: 6, x: 0, y: 2)
+            .animation(.easeInOut(duration: 0.15), value: focusedField == .operatorPicker)
 
             // Value editor
             valueEditor
 
-            // Delete button
+            // Delete button - with proper focus handling
             Button(role: .destructive, action: onRemove) {
                 Image(systemName: "trash")
                     .imageScale(.medium)
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 12)
+                    .frame(width: 70, height: 50)
             }
-            .buttonStyle(.borderless)
+            .buttonStyle(.plain)
+            .background(
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .fill(Color.red.opacity(focusedField == .trashButton ? 0.25 : 0.15))
+            )
+            .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+            .focused($focusedField, equals: .trashButton)
+            .scaleEffect(focusedField == .trashButton ? 1.015 : 1.0)
+            .shadow(color: focusedField == .trashButton ? .red.opacity(0.4) : .clear, radius: 6, x: 0, y: 2)
+            .animation(.easeInOut(duration: 0.15), value: focusedField == .trashButton)
         }
+        .padding(.horizontal, 20)
+        .padding(.vertical, 16)
+        .background(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .fill(Color.white.opacity(0.04))
+        )
         .task(id: rule.field) {
             await loadOptionsIfNeeded()
         }
@@ -302,8 +371,8 @@ private struct FilterRuleEditor: View {
             TextField("Value", text: bindingForText())
                 .textFieldStyle(.plain)
                 .padding(.horizontal, 16)
-                .padding(.vertical, 10)
-                .frame(width: 280)
+                .padding(.vertical, 12)
+                .frame(width: 300)
                 .background(
                     RoundedRectangle(cornerRadius: 10, style: .continuous)
                         .fill(Color.white.opacity(0.12))
@@ -312,8 +381,8 @@ private struct FilterRuleEditor: View {
             TextField("Value", text: bindingForNumber())
                 .textFieldStyle(.plain)
                 .padding(.horizontal, 16)
-                .padding(.vertical, 10)
-                .frame(width: 160)
+                .padding(.vertical, 12)
+                .frame(width: 180)
                 .background(
                     RoundedRectangle(cornerRadius: 10, style: .continuous)
                         .fill(Color.white.opacity(0.12))
@@ -321,7 +390,7 @@ private struct FilterRuleEditor: View {
         case .boolean:
             Toggle("True", isOn: bindingForBool())
                 .toggleStyle(.switch)
-                .frame(width: 160)
+                .frame(width: 180)
         case .date:
             DateValuePicker(
                 selection: bindingForDate(),
@@ -330,9 +399,9 @@ private struct FilterRuleEditor: View {
                     rule.value = .relativeDate(preset)
                 }
             )
-            .frame(width: 280)
+            .frame(width: 300)
         case .enumMulti, .enumSingle:
-            // Dropdown menu for enum values
+            // Dropdown menu for enum values with focus handling
             Menu {
                 if isLoadingOptions {
                     Text("Loading...")
@@ -353,7 +422,7 @@ private struct FilterRuleEditor: View {
                     }
                 }
             } label: {
-                HStack {
+                HStack(spacing: 8) {
                     if isLoadingOptions {
                         ProgressView()
                             .progressViewStyle(.circular)
@@ -361,19 +430,26 @@ private struct FilterRuleEditor: View {
                     } else {
                         Text(enumDisplayValue)
                             .lineLimit(1)
+                            .minimumScaleFactor(0.9)
                     }
+                    Spacer(minLength: 8)
                     Image(systemName: "chevron.down")
                         .imageScale(.small)
                 }
-                .frame(width: 280, alignment: .leading)
+                .frame(width: 300, alignment: .leading)
                 .padding(.horizontal, 16)
-                .padding(.vertical, 10)
-                .background(
-                    RoundedRectangle(cornerRadius: 10, style: .continuous)
-                        .fill(Color.white.opacity(0.12))
-                )
+                .padding(.vertical, 12)
             }
             .buttonStyle(.plain)
+            .background(
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .fill(Color.white.opacity(focusedField == .valuePicker ? 0.18 : 0.12))
+            )
+            .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+            .focused($focusedField, equals: .valuePicker)
+            .scaleEffect(focusedField == .valuePicker ? 1.015 : 1.0)
+            .shadow(color: focusedField == .valuePicker ? .accentColor.opacity(0.3) : .clear, radius: 6, x: 0, y: 2)
+            .animation(.easeInOut(duration: 0.15), value: focusedField == .valuePicker)
         }
     }
 
@@ -537,35 +613,6 @@ private struct FilterRuleEditor: View {
             trimmed.removeLast()
         }
         return trimmed
-    }
-}
-
-private struct CountBadge: View {
-    let state: ChannelBuilderViewModel.CountState
-
-    var body: some View {
-        HStack(spacing: 8) {
-            if state.isLoading {
-                ProgressView()
-                    .progressViewStyle(.circular)
-                    .scaleEffect(0.8)
-            }
-            Text(countLabel)
-                .font(.footnote.bold())
-        }
-        .padding(.vertical, 6)
-        .padding(.horizontal, 12)
-        .background(
-            Capsule()
-                .fill(Color.white.opacity(0.09))
-        )
-    }
-
-    private var countLabel: String {
-        if let total = state.total {
-            return state.approximate ? "~\(total)" : "\(total) items"
-        }
-        return state.isLoading ? "Counting…" : "—"
     }
 }
 

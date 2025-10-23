@@ -8,6 +8,10 @@
 import Foundation
 import PlexKit
 
+extension Notification.Name {
+    static let plexSessionShouldRefresh = Notification.Name("PlexService.sessionShouldRefresh")
+}
+
 @MainActor
 final class PlexService: ObservableObject {
 
@@ -70,6 +74,8 @@ final class PlexService: ObservableObject {
         case unableToLocateServer
         case unableToCreateServerURL
         case failedToLoadLibraries
+        case invalidURL
+        case networkError
         case plex(PlexError)
         case unknown(Error)
 
@@ -85,6 +91,10 @@ final class PlexService: ObservableObject {
                 return "The selected Plex server did not provide a usable connection URL."
             case .failedToLoadLibraries:
                 return "Failed to fetch libraries from the selected Plex server."
+            case .invalidURL:
+                return "Invalid URL constructed for API request."
+            case .networkError:
+                return "Network error occurred while fetching data."
             case .plex(let error):
                 return "Plex API error: \(error.localizedDescription)"
             case .unknown(let error):
@@ -116,6 +126,7 @@ final class PlexService: ObservableObject {
     private let deviceModel: String
     private let deviceDisplayName: String
     private let clientIdentifierValue: String
+    private var lastRefreshRequest: Date?
 
     var clientIdentifier: String {
         clientIdentifierValue
@@ -274,18 +285,17 @@ final class PlexService: ObservableObject {
         }
     }
 
-    func fetchLibraryItems(
+    private func fetchLibraryItemsPage(
         libraryKey: String,
         mediaType: PlexMediaType,
         baseURL: URL,
         token: String,
-        limit: Int? = nil
+        start: Int,
+        size: Int
     ) async throws -> [PlexMediaItem] {
-        let range: CountableClosedRange<Int>? = {
-            guard let limit, limit > 0 else { return nil }
-            return 0...(limit - 1)
-        }()
-
+        let safeStart = max(0, start)
+        let safeSize = max(1, size)
+        let range = safeStart...(safeStart + safeSize - 1)
         let request = Plex.Request.LibraryItems(
             key: libraryKey,
             mediaType: mediaType,
@@ -308,20 +318,249 @@ final class PlexService: ObservableObject {
         mediaType: PlexMediaType,
         limit: Int? = nil
     ) async throws -> [PlexMediaItem] {
-        guard let currentSession = session else {
-            throw ServiceError.noActiveSession
-        }
-        let token = currentSession.server.accessToken
+        do {
+            guard let currentSession = session else {
+                throw ServiceError.noActiveSession
+            }
+            let token = currentSession.server.accessToken
 
-        return try await performWithServerFallback { baseURL in
-            try await self.fetchLibraryItems(
-                libraryKey: library.key,
-                mediaType: mediaType,
-                baseURL: baseURL,
-                token: token,
-                limit: limit
-            )
+            if let limit, limit > 0 {
+                return try await performWithServerFallback { baseURL in
+                    try await self.fetchLibraryItemsPage(
+                        libraryKey: library.key,
+                        mediaType: mediaType,
+                        baseURL: baseURL,
+                        token: token,
+                        start: 0,
+                        size: limit
+                    )
+                }
+            }
+
+            var results: [PlexMediaItem] = []
+            var start = 0
+            var batchSize = 400
+            let minimumBatchSize = 50
+
+            while true {
+                do {
+                    let page = try await performWithServerFallback { baseURL in
+                        try await self.fetchLibraryItemsPage(
+                            libraryKey: library.key,
+                            mediaType: mediaType,
+                            baseURL: baseURL,
+                            token: token,
+                            start: start,
+                            size: batchSize
+                        )
+                    }
+
+                    if page.isEmpty {
+                        break
+                    }
+
+                    results.append(contentsOf: page)
+
+                    if page.count < batchSize {
+                        break
+                    }
+
+                    start += page.count
+                } catch {
+                    if shouldReduceBatch(for: error), batchSize > minimumBatchSize {
+                        batchSize = max(minimumBatchSize, batchSize / 2)
+                        AppLoggers.net.warning(
+                            "event=plex.fetch.batch.retry size=\(batchSize) reason=\(String(describing: error), privacy: .public)"
+                        )
+                        continue
+                    }
+                    throw error
+                }
+            }
+
+            return results
+        } catch {
+            if let reason = refreshReason(for: error) {
+                requestSessionRefresh(reason: reason)
+            }
+            throw error
         }
+    }
+
+    func fetchLibraryItems(
+        for library: PlexLibrary,
+        mediaType: PlexMediaType,
+        limit: Int? = nil,
+        customKey: String
+    ) async throws -> [PlexMediaItem] {
+        do {
+            guard let currentSession = session else {
+                throw ServiceError.noActiveSession
+            }
+            let token = currentSession.server.accessToken
+
+            if let limit, limit > 0 {
+                return try await performWithServerFallback { baseURL in
+                    try await self.fetchLibraryItemsPage(
+                        libraryKey: customKey,
+                        mediaType: mediaType,
+                        baseURL: baseURL,
+                        token: token,
+                        start: 0,
+                        size: limit
+                    )
+                }
+            }
+
+            var results: [PlexMediaItem] = []
+            var start = 0
+            var batchSize = 400
+            let minimumBatchSize = 50
+
+            while true {
+                do {
+                    let page = try await performWithServerFallback { baseURL in
+                        try await self.fetchLibraryItemsPage(
+                            libraryKey: customKey,
+                            mediaType: mediaType,
+                            baseURL: baseURL,
+                            token: token,
+                            start: start,
+                            size: batchSize
+                        )
+                    }
+
+                    if page.isEmpty {
+                        break
+                    }
+
+                    results.append(contentsOf: page)
+
+                    if page.count < batchSize {
+                        break
+                    }
+
+                    start += page.count
+                } catch {
+                    if shouldReduceBatch(for: error), batchSize > minimumBatchSize {
+                        batchSize = max(minimumBatchSize, batchSize / 2)
+                        AppLoggers.net.warning(
+                            "event=plex.fetch.batch.retry size=\(batchSize) reason=\(String(describing: error), privacy: .public)"
+                        )
+                        continue
+                    }
+                    throw error
+                }
+            }
+
+            return results
+        } catch {
+            if let reason = refreshReason(for: error) {
+                requestSessionRefresh(reason: reason)
+            }
+            throw error
+        }
+    }
+
+    func fetchShowEpisodes(
+        showRatingKey: String,
+        baseURL: URL,
+        token: String
+    ) async throws -> [PlexMediaItem] {
+        // First, get all seasons for this show
+        let seasonsURLString = "\(baseURL.absoluteString)/library/metadata/\(showRatingKey)/children"
+        guard var seasonsComponents = URLComponents(string: seasonsURLString) else {
+            throw ServiceError.invalidURL
+        }
+        
+        seasonsComponents.queryItems = [
+            URLQueryItem(name: "X-Plex-Token", value: token)
+        ]
+        
+        guard let seasonsURL = seasonsComponents.url else {
+            throw ServiceError.invalidURL
+        }
+        
+        var seasonsRequest = URLRequest(url: seasonsURL)
+        seasonsRequest.setValue("application/json", forHTTPHeaderField: "Accept")
+        
+        let (seasonsData, seasonsResponse) = try await URLSession.shared.data(for: seasonsRequest)
+        
+        guard let seasonsHttpResponse = seasonsResponse as? HTTPURLResponse,
+              seasonsHttpResponse.statusCode == 200 else {
+            throw ServiceError.networkError
+        }
+        
+        // Decode seasons
+        struct Season: Decodable {
+            let ratingKey: String
+            let title: String
+            
+            enum CodingKeys: String, CodingKey {
+                case ratingKey = "ratingKey"
+                case title = "title"
+            }
+        }
+        
+        struct SeasonsContainer: Decodable {
+            let Metadata: [Season]
+        }
+        
+        struct SeasonsResponse: Decodable {
+            let MediaContainer: SeasonsContainer
+        }
+        
+        let seasonsDecoder = JSONDecoder()
+        let seasonsDecodedResponse = try seasonsDecoder.decode(SeasonsResponse.self, from: seasonsData)
+        let seasons = seasonsDecodedResponse.MediaContainer.Metadata
+        
+        // Now fetch episodes from each season
+        var allEpisodes: [PlexMediaItem] = []
+        
+        for season in seasons {
+            let episodesURLString = "\(baseURL.absoluteString)/library/metadata/\(season.ratingKey)/children"
+            guard var episodesComponents = URLComponents(string: episodesURLString) else {
+                continue
+            }
+            
+            episodesComponents.queryItems = [
+                URLQueryItem(name: "X-Plex-Token", value: token)
+            ]
+            
+            guard let episodesURL = episodesComponents.url else {
+                continue
+            }
+            
+            var episodesRequest = URLRequest(url: episodesURL)
+            episodesRequest.setValue("application/json", forHTTPHeaderField: "Accept")
+            
+            do {
+                let (episodesData, episodesResponse) = try await URLSession.shared.data(for: episodesRequest)
+                
+                guard let episodesHttpResponse = episodesResponse as? HTTPURLResponse,
+                      episodesHttpResponse.statusCode == 200 else {
+                    continue
+                }
+                
+                // Decode episodes
+                struct EpisodesContainer: Decodable {
+                    let Metadata: [PlexMediaItem]
+                }
+                
+                struct EpisodesResponse: Decodable {
+                    let MediaContainer: EpisodesContainer
+                }
+                
+                let episodesDecoder = JSONDecoder()
+                let episodesDecodedResponse = try episodesDecoder.decode(EpisodesResponse.self, from: episodesData)
+                allEpisodes.append(contentsOf: episodesDecodedResponse.MediaContainer.Metadata)
+            } catch {
+                // Skip this season if there's an error
+                continue
+            }
+        }
+        
+        return allEpisodes
     }
 
     func establishSession(
@@ -388,6 +627,93 @@ final class PlexService: ObservableObject {
             throw ServiceError.unknown(lastError)
         }
         throw ServiceError.failedToLoadLibraries
+    }
+
+    private func refreshReason(for error: Error) -> String? {
+        if let serviceError = error as? ServiceError {
+            switch serviceError {
+            case .noActiveSession:
+                return "service.no_active_session"
+            case .unknown(let underlying):
+                return refreshReason(for: underlying)
+            default:
+                return nil
+            }
+        }
+
+        if let urlError = error as? URLError {
+            switch urlError.code {
+            case .timedOut:
+                return "network.timeout"
+            case .networkConnectionLost:
+                return "network.connection_lost"
+            case .notConnectedToInternet:
+                return "network.offline"
+            case .cannotConnectToHost:
+                return "network.cannot_connect"
+            case .cannotFindHost:
+                return "network.cannot_find_host"
+            case .dnsLookupFailed:
+                return "network.dns_failed"
+            default:
+                return nil
+            }
+        }
+
+        return nil
+    }
+
+    private func requestSessionRefresh(reason: String) {
+        let now = Date()
+        if let lastRefreshRequest, now.timeIntervalSince(lastRefreshRequest) < 15 {
+            return
+        }
+        lastRefreshRequest = now
+        AppLoggers.app.info("event=auth.refresh.request reason=\(reason, privacy: .public)")
+        NotificationCenter.default.post(
+            name: .plexSessionShouldRefresh,
+            object: self,
+            userInfo: ["reason": reason]
+        )
+    }
+
+    private func shouldReduceBatch(for error: Error) -> Bool {
+        if let serviceError = error as? ServiceError {
+            switch serviceError {
+            case .unknown(let underlying):
+                return shouldReduceBatch(for: underlying)
+            default:
+                return false
+            }
+        }
+
+        if let urlError = error as? URLError {
+            switch urlError.code {
+            case .timedOut,
+                 .networkConnectionLost,
+                 .cannotConnectToHost,
+                 .dnsLookupFailed:
+                return true
+            default:
+                return false
+            }
+        }
+
+        let nsError = error as NSError
+        if nsError.domain == NSURLErrorDomain {
+            let code = URLError.Code(rawValue: nsError.code)
+            switch code {
+            case .timedOut,
+                 .networkConnectionLost,
+                 .cannotConnectToHost,
+                 .dnsLookupFailed:
+                return true
+            default:
+                return false
+            }
+        }
+
+        return false
     }
 
     func buildImageURL(from path: String, width: Int? = nil, height: Int? = nil) -> URL? {

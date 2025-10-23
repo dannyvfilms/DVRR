@@ -76,6 +76,11 @@ struct Channel: Identifiable, Codable, Hashable {
             let viewCount: Int?
             let contentRating: String?
             let grandparentTitle: String?
+            let grandparentRatingKey: String?
+            let parentTitle: String?
+            let parentRatingKey: String?
+            let seasonNumber: Int?
+            let episodeNumber: Int?
             let rating: Double?
             let audienceRating: Double?
         }
@@ -148,6 +153,20 @@ struct Channel: Identifiable, Codable, Hashable {
             partID = try container.decodeIfPresent(Int.self, forKey: .partID)
             metadata = try container.decodeIfPresent(Metadata.self, forKey: .metadata)
             artwork = try container.decodeIfPresent(Artwork.self, forKey: .artwork) ?? Artwork()
+        }
+
+        var seriesTitle: String {
+            metadata?.grandparentTitle ?? metadata?.title ?? title
+        }
+
+        var episodeTitle: String {
+            metadata?.title ?? title
+        }
+
+        var seasonEpisodeLabel: String? {
+            guard let season = metadata?.seasonNumber,
+                  let episode = metadata?.episodeNumber else { return nil }
+            return String(format: "S%02d·E%02d", season, episode)
         }
 
         func encode(to encoder: Encoder) throws {
@@ -361,11 +380,16 @@ extension Channel.Media {
                 viewCount: item.viewCount,
                 contentRating: item.contentRating,
                 grandparentTitle: item.grandparentTitle,
+                grandparentRatingKey: item.grandparentRatingKey,
+                parentTitle: item.parentTitle,
+                parentRatingKey: item.parentRatingKey,
+                seasonNumber: item.parentIndex,
+                episodeNumber: item.index,
                 rating: item.rating,
                 audienceRating: item.userRating
             ),
             artwork: Channel.Media.Artwork(
-                thumb: item.thumb,
+                thumb: item.parentThumb,  // Use season poster instead of episode poster
                 art: item.art,
                 parentThumb: item.parentThumb,
                 grandparentThumb: item.grandparentThumb,
@@ -399,11 +423,23 @@ extension Channel.Media {
     var logoArtworkCandidates: [String] {
         // For movies, Plex stores clearLogos at /library/metadata/{ratingKey}/clearLogo
         // Try this first, then fall back to theme fields (for TV shows)
-        [
-            "/library/metadata/\(id)/clearLogo",
-            artwork.grandparentTheme,
-            artwork.theme
-        ].compactMap { $0 }
+        var candidates: [String] = [
+            "/library/metadata/\(id)/clearLogo"
+        ]
+
+        if let showKey = metadata?.grandparentRatingKey {
+            candidates.append("/library/metadata/\(showKey)/clearLogo")
+        }
+
+        if let grandparentTheme = artwork.grandparentTheme {
+            candidates.append(grandparentTheme)
+        }
+        if let theme = artwork.theme {
+            candidates.append(theme)
+        }
+
+        var seen = Set<String>()
+        return candidates.filter { seen.insert($0).inserted }
     }
 }
 

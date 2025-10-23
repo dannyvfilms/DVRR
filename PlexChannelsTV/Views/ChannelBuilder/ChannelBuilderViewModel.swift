@@ -14,8 +14,6 @@ final class ChannelBuilderViewModel: ObservableObject {
     enum Step: Equatable {
         case libraries
         case rules(index: Int)
-        case sort
-        case review
     }
 
     struct CountState: Equatable {
@@ -116,15 +114,15 @@ final class ChannelBuilderViewModel: ObservableObject {
         preloadCountIfNeeded(forIndex: 0)
     }
 
-    func goToNextRulesStep(currentIndex: Int) {
+    @discardableResult
+    func goToNextRulesStep(currentIndex: Int) -> Bool {
         let nextIndex = currentIndex + 1
         if nextIndex < draft.selectedLibraries.count {
             step = .rules(index: nextIndex)
             preloadCountIfNeeded(forIndex: nextIndex)
-        } else {
-            step = .sort
-            ensureSortDefaults()
+            return true
         }
+        return false
     }
 
     func goBack(from step: Step) {
@@ -137,19 +135,7 @@ final class ChannelBuilderViewModel: ObservableObject {
             } else {
                 self.step = .rules(index: max(0, index - 1))
             }
-        case .sort:
-            if draft.selectedLibraries.isEmpty {
-                self.step = .libraries
-            } else {
-                self.step = .rules(index: draft.selectedLibraries.count - 1)
-            }
-        case .review:
-            self.step = .sort
         }
-    }
-
-    func advanceFromSort() {
-        step = .review
     }
 
     func spec(for ref: LibraryFilterSpec.LibraryRef) -> LibraryFilterSpec {
@@ -191,7 +177,7 @@ final class ChannelBuilderViewModel: ObservableObject {
 
         countTasks[id] = Task { [weak self] in
             let startedAt = Date()
-            try? await Task.sleep(nanoseconds: 350_000_000)
+            try? await Task.sleep(nanoseconds: 1_000_000_000)  // 1 second debounce
             guard let self, !Task.isCancelled else { return }
             guard let library = self.library(for: ref.id) else { return }
             do {
@@ -212,10 +198,44 @@ final class ChannelBuilderViewModel: ObservableObject {
         }
     }
 
-    func totalItemCountEstimate() -> Int? {
-        let totals = draft.selectedLibraries.compactMap { counts[$0.id]?.total }
-        guard totals.count == draft.selectedLibraries.count else { return nil }
-        return totals.reduce(0, +)
+    func fetchPreviewMedia(limit: Int = 20) async -> [Channel.Media] {
+        let descriptor = draft.sort
+        let shuffle = draft.options.shuffle
+        let serverSort = descriptor.key == .random ? nil : descriptor
+
+        var combinedMedia: [Channel.Media] = []
+        var seenIDs = Set<String>()
+        
+        for ref in draft.selectedLibraries {
+            guard let library = library(for: ref.id) else { continue }
+            let spec = spec(for: ref)
+            do {
+                let mediaItems = try await queryBuilder.buildChannelMedia(
+                    library: library,
+                    using: spec.rootGroup,
+                    sort: serverSort,
+                    limit: limit
+                )
+                for media in mediaItems where seenIDs.insert(media.id).inserted {
+                    combinedMedia.append(media)
+                }
+            } catch {
+                AppLoggers.channel.error("event=builder.preview.fail libraryID=\(ref.id, privacy: .public) error=\(String(describing: error), privacy: .public)")
+            }
+        }
+        
+        var preview = combinedMedia
+
+        if descriptor.key != .random && !shuffle {
+            preview = preview.sorted(using: descriptor)
+        }
+
+        if descriptor.key == .random || shuffle {
+            var generator = SeededRandomNumberGenerator(seed: deterministicSeed(for: draft.id))
+            preview.shuffle(using: &generator)
+        }
+
+        return Array(preview.prefix(limit))
     }
 
     func library(for id: String) -> PlexLibrary? {
@@ -226,17 +246,20 @@ final class ChannelBuilderViewModel: ObservableObject {
         filterCatalog.availableFields(for: library)
     }
 
-    func ensureSortDefaults() {
-        guard let first = draft.selectedLibraries.first, let library = library(for: first.id) else { return }
-        draft.sort = sortCatalog.defaultDescriptor(for: library)
-    }
-
     func normalizedType(for type: PlexMediaType) -> PlexMediaType {
         switch type {
         case .show:
             return .episode
         default:
             return type
+        }
+    }
+
+    private func deterministicSeed(for id: UUID) -> UInt64 {
+        withUnsafeBytes(of: id.uuid) { buffer in
+            let lower = buffer.load(as: UInt64.self)
+            let upper = buffer.baseAddress!.advanced(by: 8).assumingMemoryBound(to: UInt64.self).pointee
+            return UInt64(littleEndian: lower) ^ UInt64(littleEndian: upper)
         }
     }
 
@@ -266,10 +289,6 @@ private extension ChannelBuilderViewModel.Step {
             return "libraries"
         case .rules:
             return "rules"
-        case .sort:
-            return "sort"
-        case .review:
-            return "review"
         }
     }
 }

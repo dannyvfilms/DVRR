@@ -30,6 +30,7 @@ final class AuthState: ObservableObject {
     private let channelSeeder: ChannelSeeder?
 
     private var cancellables: Set<AnyCancellable> = []
+    private var isRefreshingSession = false
 
     init(
         plexService: PlexService,
@@ -50,6 +51,17 @@ final class AuthState: ObservableObject {
             }
             .store(in: &cancellables)
 
+        NotificationCenter.default.publisher(for: .plexSessionShouldRefresh)
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] notification in
+                guard let self else { return }
+                let reason = notification.userInfo?["reason"] as? String ?? "unknown"
+                Task { @MainActor in
+                    await self.refreshSession(reason: reason)
+                }
+            }
+            .store(in: &cancellables)
+
         Task {
             await bootstrapFromKeychain()
         }
@@ -60,8 +72,15 @@ final class AuthState: ObservableObject {
         return try await linkService.requestPin()
     }
 
+    func prepareForLinking() {
+        if plexService.session == nil {
+            isLinked = false
+            linkService.setLinked(false)
+        }
+    }
+
     func pollPin(id: Int, until deadline: Date) async throws -> String {
-        if isLinked {
+        if isLinked, session != nil {
             throw LinkError.alreadyLinked
         }
         return try await linkService.pollPin(id: id, until: deadline)
@@ -128,6 +147,122 @@ final class AuthState: ObservableObject {
         linkService.setLinked(true)
     }
 
+    func refreshSession(reason: String = "manual") async {
+        if isRefreshingSession { return }
+        isRefreshingSession = true
+        defer { isRefreshingSession = false }
+
+        var candidateToken: String?
+        if let current = session?.authToken {
+            candidateToken = current
+        } else {
+            do {
+                candidateToken = try keychain.readToken(account: keychainAccount)
+            } catch {
+                AppLoggers.app.error("event=auth.refresh.skip reason=keychain error=\(String(describing: error), privacy: .public)")
+                linkingError = error.localizedDescription
+                signOut()
+                return
+            }
+        }
+
+        guard let authToken = candidateToken else {
+            AppLoggers.app.error("event=auth.refresh.skip reason=no_token")
+            signOut()
+            return
+        }
+
+        AppLoggers.app.info("event=auth.refresh.start reason=\(reason, privacy: .public)")
+
+        do {
+            let devices = try await linkService.fetchResources(authToken: authToken)
+            guard let chosen = linkService.chooseBestServer(devices) else {
+                throw LinkError.invalidResponse
+            }
+
+            let account = try? await linkService.fetchAccount(authToken: authToken)
+            let serverToken = chosen.accessToken.isEmpty ? authToken : chosen.accessToken
+            let connectionURLs = chosen.connections.map { $0.uri }
+            guard let primaryURL = connectionURLs.first else {
+                throw LinkError.invalidResponse
+            }
+
+            try await plexService.establishSession(
+                accountToken: authToken,
+                serverName: chosen.device.name,
+                serverIdentifier: chosen.device.clientIdentifier,
+                serverURL: primaryURL,
+                fallbackServerURLs: Array(connectionURLs.dropFirst()),
+                serverAccessToken: serverToken
+            )
+
+            try keychain.store(token: authToken, account: keychainAccount)
+
+            let libraries = plexService.session?.libraries ?? []
+            let activeURL = plexService.session?.server.baseURL ?? primaryURL
+            let accountName = account?.title ?? account?.username ?? session?.accountName ?? "Plex User"
+
+            session = PlexSessionInfo(
+                authToken: authToken,
+                serverURI: activeURL,
+                serverAccessToken: serverToken,
+                serverName: chosen.device.name,
+                libraryCount: libraries.count,
+                accountName: accountName
+            )
+            isLinked = true
+            linkingError = nil
+            linkService.setLinked(true)
+
+            AppLoggers.app.info(
+                "event=auth.refresh.ok serverURI=\(activeURL.redactedForLogging(), privacy: .public)"
+            )
+
+            if let seeder = channelSeeder {
+                Task {
+                    await seeder.seedIfNeeded(libraries: libraries)
+                }
+            }
+        } catch {
+            AppLoggers.app.error(
+                "event=auth.refresh.fail error=\(String(describing: error), privacy: .public)"
+            )
+            handleRefreshFailure(error)
+        }
+    }
+
+    private func handleRefreshFailure(_ error: Error) {
+        if let linkError = error as? LinkError {
+            switch linkError {
+            case .httpError(let status, _):
+                if status == 401 {
+                    signOut()
+                    return
+                }
+                linkingError = linkError.localizedDescription
+                resetLinkingStateIfNeeded()
+            default:
+                linkingError = linkError.localizedDescription
+                resetLinkingStateIfNeeded()
+            }
+            return
+        }
+
+        let nsError = error as NSError
+        if nsError.domain == NSURLErrorDomain {
+            if nsError.code == NSURLErrorUserAuthenticationRequired {
+                signOut()
+            } else {
+                linkingError = nsError.localizedDescription
+                resetLinkingStateIfNeeded()
+            }
+            return
+        }
+
+        linkingError = error.localizedDescription
+        resetLinkingStateIfNeeded()
+    }
+
     func signOut() {
         plexService.signOut()
         keychain.deleteToken(account: keychainAccount)
@@ -185,6 +320,13 @@ final class AuthState: ObservableObject {
         } catch {
             keychain.deleteToken(account: keychainAccount)
             linkingError = error.localizedDescription
+        }
+    }
+
+    private func resetLinkingStateIfNeeded() {
+        if plexService.session == nil {
+            isLinked = false
+            linkService.setLinked(false)
         }
     }
 

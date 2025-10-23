@@ -12,9 +12,12 @@ enum FilterFieldResolver {
     static func stringValue(_ field: FilterField, from item: PlexMediaItem) -> String? {
         switch field {
         case .title:
+            if item.type == .episode {
+                return item.grandparentTitle ?? item.title
+            }
             return item.title
         case .showTitle:
-            return item.grandparentTitle
+            return item.grandparentTitle ?? item.title
         case .studio, .network:
             return item.studio
         default:
