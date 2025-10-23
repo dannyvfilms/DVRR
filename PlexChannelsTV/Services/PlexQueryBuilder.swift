@@ -213,7 +213,7 @@ private extension PlexQueryBuilder {
         // Debug: Log the show filters being applied
         AppLoggers.channel.info("event=tvFilter.debug showFilters rules=\(showFilters.rules.count) groups=\(showFilters.groups.count)")
         for (index, rule) in showFilters.rules.enumerated() {
-            AppLoggers.channel.info("event=tvFilter.debug showRule[\(index)] field=\(rule.field.displayName) op=\(rule.op.rawValue) value=\(rule.value)")
+            AppLoggers.channel.info("event=tvFilter.debug showRule[\(index)] field=\(rule.field.displayName) op=\(rule.op.rawValue) value=\(rule.value.debugDescription)")
         }
         
         let matchingShows = showFilters.isEmpty ? allShows : allShows.filter { show in

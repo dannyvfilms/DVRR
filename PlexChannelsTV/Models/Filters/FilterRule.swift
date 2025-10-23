@@ -29,6 +29,25 @@ enum FilterValue: Hashable {
             return false
         }
     }
+    
+    var debugDescription: String {
+        switch self {
+        case .text(let value):
+            return "\"\(value)\""
+        case .number(let value):
+            return "\(value)"
+        case .boolean(let value):
+            return "\(value)"
+        case .date(let value):
+            return "\(value)"
+        case .enumCase(let value):
+            return "\"\(value)\""
+        case .enumSet(let values):
+            return "[\(values.map { "\"\($0)\"" }.joined(separator: ", "))]"
+        case .relativeDate(let preset):
+            return "\"\(preset.displayName)\""
+        }
+    }
 }
 
 extension FilterValue: Codable {
