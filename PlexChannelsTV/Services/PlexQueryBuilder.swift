@@ -213,7 +213,7 @@ private extension PlexQueryBuilder {
         // Debug: Log the show filters being applied
         AppLoggers.channel.info("event=tvFilter.debug showFilters rules=\(showFilters.rules.count) groups=\(showFilters.groups.count)")
         for (index, rule) in showFilters.rules.enumerated() {
-            AppLoggers.channel.info("event=tvFilter.debug showRule[\(index)] field=\(rule.field) op=\(rule.op) value=\(rule.value)")
+            AppLoggers.channel.info("event=tvFilter.debug showRule[\(index)] field=\(rule.field.displayName) op=\(rule.op.rawValue) value=\(rule.value)")
         }
         
         let matchingShows = showFilters.isEmpty ? allShows : allShows.filter { show in
@@ -327,7 +327,7 @@ private extension PlexQueryBuilder {
         
         for rule in group.rules {
             let isShowLevel = isShowLevelField(rule.field)
-            AppLoggers.channel.info("event=tvFilter.debug extractShowLevelFilters rule field=\(rule.field) isShowLevel=\(isShowLevel)")
+            AppLoggers.channel.info("event=tvFilter.debug extractShowLevelFilters rule field=\(rule.field.displayName) isShowLevel=\(isShowLevel)")
             if isShowLevel {
                 showRules.append(rule)
             }
