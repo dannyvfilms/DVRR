@@ -150,6 +150,9 @@ private struct GroupEditor: View {
                             group.rules.remove(at: index)
                             onGroupChange(group)
                         }
+                    },
+                    onRuleChange: {
+                        onGroupChange(group)
                     }
                 )
                 .padding(.leading, CGFloat(level) * indent)
@@ -243,6 +246,7 @@ private struct FilterRuleEditor: View {
     let availableFields: [FilterField]
     let filterCatalog: PlexFilterCatalog
     var onRemove: () -> Void
+    var onRuleChange: (() -> Void)?
 
     @State private var enumOptions: [FilterOption] = []
     @State private var isLoadingOptions = false
@@ -361,6 +365,11 @@ private struct FilterRuleEditor: View {
         )
         .task(id: rule.field) {
             await loadOptionsIfNeeded()
+        }
+        .onChange(of: rule.value) { _, _ in
+            // Trigger count update when rule value changes
+            AppLoggers.channel.info("event=builder.rules.change libraryID=\(library.uuid, privacy: .public) field=\(rule.field.id, privacy: .public) op=\(rule.op.rawValue, privacy: .public) action=valueChange")
+            onRuleChange?()
         }
     }
 
