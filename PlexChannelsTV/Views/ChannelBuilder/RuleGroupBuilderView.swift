@@ -475,8 +475,16 @@ private struct FilterRuleEditor: View {
                 }
             },
             set: { newValue in
-                textValue = newValue
-                rule.value = .text(newValue)
+                // Sanitize text input to remove invisible characters that can break filtering
+                let sanitized = newValue.trimmingCharacters(in: .whitespacesAndNewlines)
+                    .replacingOccurrences(of: "\u{FFFC}", with: "") // Object replacement character
+                    .replacingOccurrences(of: "\u{200B}", with: "") // Zero-width space
+                    .replacingOccurrences(of: "\u{200C}", with: "") // Zero-width non-joiner
+                    .replacingOccurrences(of: "\u{200D}", with: "") // Zero-width joiner
+                    .replacingOccurrences(of: "\u{FEFF}", with: "") // Zero-width no-break space
+                
+                textValue = sanitized
+                rule.value = .text(sanitized)
             }
         )
     }
@@ -494,8 +502,16 @@ private struct FilterRuleEditor: View {
                 }
             },
             set: { newValue in
-                numericString = newValue
-                if let double = Double(newValue) {
+                // Sanitize text input to remove invisible characters that can break filtering
+                let sanitized = newValue.trimmingCharacters(in: .whitespacesAndNewlines)
+                    .replacingOccurrences(of: "\u{FFFC}", with: "") // Object replacement character
+                    .replacingOccurrences(of: "\u{200B}", with: "") // Zero-width space
+                    .replacingOccurrences(of: "\u{200C}", with: "") // Zero-width non-joiner
+                    .replacingOccurrences(of: "\u{200D}", with: "") // Zero-width joiner
+                    .replacingOccurrences(of: "\u{FEFF}", with: "") // Zero-width no-break space
+                
+                numericString = sanitized
+                if let double = Double(sanitized) {
                     rule.value = .number(double)
                 }
             }
