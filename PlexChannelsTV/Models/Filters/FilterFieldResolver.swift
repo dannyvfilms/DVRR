@@ -7,22 +7,32 @@
 
 import Foundation
 import PlexKit
+import os.log
 
 enum FilterFieldResolver {
     static func stringValue(_ field: FilterField, from item: PlexMediaItem) -> String? {
+        let result: String?
         switch field {
         case .title:
             if item.type == .episode {
-                return item.grandparentTitle ?? item.title
+                result = item.grandparentTitle ?? item.title
+            } else {
+                result = item.title
             }
-            return item.title
         case .showTitle:
-            return item.grandparentTitle ?? item.title
+            result = item.grandparentTitle ?? item.title
         case .studio, .network:
-            return item.studio
+            result = item.studio
         default:
-            return nil
+            result = nil
         }
+        
+        // Debug logging for title field
+        if field == .title {
+            AppLoggers.channel.info("event=tvFilter.debug stringValue field=title itemType=\(item.type) itemTitle=\(item.title ?? "nil") grandparentTitle=\(item.grandparentTitle ?? "nil") result=\(result ?? "nil")")
+        }
+        
+        return result
     }
 
     static func stringValues(_ field: FilterField, from item: PlexMediaItem) -> [String] {

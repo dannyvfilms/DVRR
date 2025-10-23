@@ -211,7 +211,9 @@ private extension PlexQueryBuilder {
         }
         
         let matchingShows = showFilters.isEmpty ? allShows : allShows.filter { show in
-            matches(show, group: showFilters)
+            let matchesResult = matches(show, group: showFilters)
+            AppLoggers.channel.info("event=tvFilter.debug showMatch title=\(show.title ?? "unknown") matches=\(matchesResult)")
+            return matchesResult
         }
         
         AppLoggers.channel.info("event=tvFilter.matchedShows count=\(matchingShows.count) titles=\(matchingShows.prefix(10).map { $0.title ?? "unknown" }.joined(separator: ", "))")
@@ -411,24 +413,28 @@ private extension PlexQueryBuilder {
 private extension PlexQueryBuilder {
     func compareText(candidate: String?, search: String, operator op: FilterOperator) -> Bool {
         guard let candidate else {
+            AppLoggers.channel.info("event=tvFilter.debug textCompare candidate=nil search=\(search) op=\(op) result=\(op == .notEquals)")
             return op == .notEquals
         }
+        let result: Bool
         switch op {
         case .contains:
-            return candidate.localizedCaseInsensitiveContains(search)
+            result = candidate.localizedCaseInsensitiveContains(search)
         case .notContains:
-            return !candidate.localizedCaseInsensitiveContains(search)
+            result = !candidate.localizedCaseInsensitiveContains(search)
         case .equals:
-            return candidate.localizedCaseInsensitiveCompare(search) == .orderedSame
+            result = candidate.localizedCaseInsensitiveCompare(search) == .orderedSame
         case .notEquals:
-            return candidate.localizedCaseInsensitiveCompare(search) != .orderedSame
+            result = candidate.localizedCaseInsensitiveCompare(search) != .orderedSame
         case .beginsWith:
-            return candidate.lowercased().hasPrefix(search.lowercased())
+            result = candidate.lowercased().hasPrefix(search.lowercased())
         case .endsWith:
-            return candidate.lowercased().hasSuffix(search.lowercased())
+            result = candidate.lowercased().hasSuffix(search.lowercased())
         default:
-            return false
+            result = false
         }
+        AppLoggers.channel.info("event=tvFilter.debug textCompare candidate=\(candidate) search=\(search) op=\(op) result=\(result)")
+        return result
     }
 
     func compareEnumerations(
