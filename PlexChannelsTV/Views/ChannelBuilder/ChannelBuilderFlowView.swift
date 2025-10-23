@@ -50,8 +50,8 @@ struct ChannelBuilderFlowView: View {
             .onChange(of: viewModel.step) { _, newStep in
                 handleStepChange(newStep)
             }
-            .onChange(of: viewModel.draft.perLibrarySpecs) { _, _ in
-                handleSpecChange()
+            .onChange(of: viewModel.previewUpdateTrigger) { _, _ in
+                handlePreviewUpdate()
             }
             .onChange(of: viewModel.draft.sort) { _, _ in
                 handleSortOrOptionChange()
@@ -133,7 +133,7 @@ struct ChannelBuilderFlowView: View {
         }
     }
     
-    private func handleSpecChange() {
+    private func handlePreviewUpdate() {
         if case .rules = viewModel.step {
             fetchPreviewMedia()
         }

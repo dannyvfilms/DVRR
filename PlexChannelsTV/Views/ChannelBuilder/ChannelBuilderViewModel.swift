@@ -30,6 +30,7 @@ final class ChannelBuilderViewModel: ObservableObject {
     @Published var draft: ChannelDraft = ChannelDraft()
     @Published var counts: [String: CountState] = [:]
     @Published var errorMessage: String?
+    @Published var previewUpdateTrigger = UUID()
 
     let plexService: PlexService
     let channelStore: ChannelStore
@@ -184,6 +185,8 @@ final class ChannelBuilderViewModel: ObservableObject {
                 let total = try await self.queryBuilder.count(library: library, using: group)
                 await MainActor.run {
                     self.counts[id] = CountState(isLoading: false, total: total, approximate: false)
+                    // Trigger preview update after count completes
+                    self.notifyPreviewUpdateNeeded()
                 }
                 let elapsed = Int(Date().timeIntervalSince(startedAt) * 1000)
                 AppLoggers.channel.info("event=builder.count.ok libraryID=\(id, privacy: .public) total=\(total) elapsedMs=\(elapsed) remote=false")
@@ -261,6 +264,10 @@ final class ChannelBuilderViewModel: ObservableObject {
             let upper = buffer.baseAddress!.advanced(by: 8).assumingMemoryBound(to: UInt64.self).pointee
             return UInt64(littleEndian: lower) ^ UInt64(littleEndian: upper)
         }
+    }
+
+    private func notifyPreviewUpdateNeeded() {
+        previewUpdateTrigger = UUID()
     }
 
     private func updateSuggestedNameIfNeeded() {
