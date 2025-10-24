@@ -421,16 +421,20 @@ extension Channel.Media {
     }
 
     var logoArtworkCandidates: [String] {
-        // For movies, Plex stores clearLogos at /library/metadata/{ratingKey}/clearLogo
-        // Try this first, then fall back to theme fields (for TV shows)
-        var candidates: [String] = [
-            "/library/metadata/\(id)/clearLogo"
-        ]
-
+        var candidates: [String] = []
+        
+        // For TV episodes, prioritize show's clearLogo over episode's clearLogo
         if let showKey = metadata?.grandparentRatingKey {
+            // TV episode - try show's clearLogo first
             candidates.append("/library/metadata/\(showKey)/clearLogo")
+            // Also try episode's clearLogo as fallback
+            candidates.append("/library/metadata/\(id)/clearLogo")
+        } else {
+            // Movie or other - try item's clearLogo first
+            candidates.append("/library/metadata/\(id)/clearLogo")
         }
 
+        // Fall back to theme fields
         if let grandparentTheme = artwork.grandparentTheme {
             candidates.append(grandparentTheme)
         }
