@@ -342,6 +342,8 @@ final class PlexService: ObservableObject {
             var batchSize = 400
             let minimumBatchSize = 50
 
+            AppLoggers.net.info("event=plexService.fetchLibraryItems.start libraryType=\(mediaType.rawValue) libraryKey=\(library.key, privacy: .public) limit=nil")
+
             while true {
                 do {
                     let page = try await performWithServerFallback { baseURL in
@@ -355,13 +357,17 @@ final class PlexService: ObservableObject {
                         )
                     }
 
+                    AppLoggers.net.info("event=plexService.fetchLibraryItems.page libraryType=\(mediaType.rawValue) start=\(start) size=\(batchSize) pageCount=\(page.count) totalSoFar=\(results.count)")
+
                     if page.isEmpty {
+                        AppLoggers.net.info("event=plexService.fetchLibraryItems.empty libraryType=\(mediaType.rawValue) breaking")
                         break
                     }
 
                     results.append(contentsOf: page)
 
                     if page.count < batchSize {
+                        AppLoggers.net.info("event=plexService.fetchLibraryItems.complete libraryType=\(mediaType.rawValue) pageCount=\(page.count) batchSize=\(batchSize) totalItems=\(results.count)")
                         break
                     }
 
