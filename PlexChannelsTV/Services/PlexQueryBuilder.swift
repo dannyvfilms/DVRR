@@ -52,9 +52,9 @@ actor PlexQueryBuilder {
         let cacheKey = library.uuid
         let targetType = preferredMediaType(for: library)
 
-        // Only use cache if we're not requesting the full library
-        // This ensures that when we want the full library, we always fetch fresh
-        if limit != nil, let cached = mediaCache[cacheKey] {
+        // Use cache if available, regardless of limit
+        // This prevents multiple fetches of the same library
+        if let cached = mediaCache[cacheKey] {
             AppLoggers.channel.info("event=queryBuilder.snapshot.cache libraryType=\(library.type.rawValue) libraryID=\(library.uuid, privacy: .public) itemCount=\(cached.count) limit=\(limit ?? -1)")
             return cached
         }
@@ -112,11 +112,9 @@ actor PlexQueryBuilder {
 
         AppLoggers.channel.info("event=queryBuilder.snapshot.fetched libraryType=\(library.type.rawValue) libraryID=\(library.uuid, privacy: .public) itemCount=\(items.count) limit=\(effectiveLimit ?? -1)")
 
-        // Only cache if we're not fetching the full library
-        // This prevents the cache from being populated with limited results
-        if limit != nil {
-            mediaCache[cacheKey] = items
-        }
+        // Cache the results for future use
+        // This prevents multiple fetches of the same library
+        mediaCache[cacheKey] = items
 
         return items
     }
