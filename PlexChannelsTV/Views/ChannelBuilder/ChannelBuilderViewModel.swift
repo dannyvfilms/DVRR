@@ -42,7 +42,7 @@ final class ChannelBuilderViewModel: ObservableObject {
 
     private var allowedType: PlexMediaType?
     private var countTasks: [String: Task<Void, Never>] = [:]
-    private var lastProgressUpdate: [String: Date] = [:]
+    private var isMenuOpen = false
 
     init(
         plexService: PlexService,
@@ -293,25 +293,25 @@ final class ChannelBuilderViewModel: ObservableObject {
         previewUpdateTrigger = UUID()
     }
 
+    func setMenuOpen(_ isOpen: Bool) {
+        isMenuOpen = isOpen
+        AppLoggers.channel.info("event=builder.menu.state isOpen=\(isOpen)")
+    }
+    
     private func updateCountProgress(for libraryID: String, count: Int) {
+        // Don't update progress if a menu is open to prevent navigation stuttering
+        if isMenuOpen {
+            AppLoggers.channel.info("event=builder.progress.skipped libraryID=\(libraryID, privacy: .public) reason=menuOpen")
+            return
+        }
+        
         if let current = counts[libraryID], current.isLoading {
-            // Throttle UI updates to prevent stuttering during long fetches
-            // Only update every 500ms to avoid overwhelming the UI
-            let now = Date()
-            let lastUpdate = lastProgressUpdate[libraryID] ?? Date.distantPast
-            let timeSinceLastUpdate = now.timeIntervalSince(lastUpdate)
-            
-            let shouldUpdate = timeSinceLastUpdate >= 0.5 || count < 1000 || count % 1000 == 0
-            
-            if shouldUpdate {
-                lastProgressUpdate[libraryID] = now
-                counts[libraryID] = CountState(
-                    isLoading: true,
-                    total: current.total,
-                    approximate: current.approximate,
-                    progressCount: count
-                )
-            }
+            counts[libraryID] = CountState(
+                isLoading: true,
+                total: current.total,
+                approximate: current.approximate,
+                progressCount: count
+            )
         }
     }
 

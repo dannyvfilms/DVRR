@@ -15,6 +15,7 @@ struct RuleGroupBuilderView: View {
     let filterCatalog: PlexFilterCatalog
     let countState: ChannelBuilderViewModel.CountState?
     var onSpecChange: (LibraryFilterSpec) -> Void
+    var onMenuStateChange: ((Bool) -> Void)?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 24) {
@@ -26,7 +27,8 @@ struct RuleGroupBuilderView: View {
                 filterCatalog: filterCatalog,
                 onGroupChange: { updatedGroup in
                     spec.rootGroup = updatedGroup
-                }
+                },
+                onMenuStateChange: onMenuStateChange
             )
         }
         .padding(.horizontal, 32)  // Container padding (2.5× shadow radius) to prevent clipping
@@ -44,6 +46,7 @@ private struct GroupEditor: View {
     let availableFields: [FilterField]
     let filterCatalog: PlexFilterCatalog
     var onGroupChange: (FilterGroup) -> Void
+    var onMenuStateChange: ((Bool) -> Void)?
 
     private let spacing: CGFloat = 20
     private let indent: CGFloat = 40
@@ -153,7 +156,8 @@ private struct GroupEditor: View {
                     },
                     onRuleChange: {
                         onGroupChange(group)
-                    }
+                    },
+                    onMenuStateChange: onMenuStateChange
                 )
                 .padding(.leading, CGFloat(level) * indent)
             }
@@ -247,6 +251,7 @@ private struct FilterRuleEditor: View {
     let filterCatalog: PlexFilterCatalog
     var onRemove: () -> Void
     var onRuleChange: (() -> Void)?
+    var onMenuStateChange: ((Bool) -> Void)?
 
     @State private var enumOptions: [FilterOption] = []
     @State private var isLoadingOptions = false
@@ -370,6 +375,10 @@ private struct FilterRuleEditor: View {
             // Trigger count update when rule value changes
             AppLoggers.channel.info("event=builder.rules.change libraryID=\(library.uuid, privacy: .public) field=\(rule.field.id, privacy: .public) op=\(rule.op.rawValue, privacy: .public) action=valueChange")
             onRuleChange?()
+        }
+        .onChange(of: focusedField) { _, newValue in
+            let isMenuOpen = newValue != nil
+            onMenuStateChange?(isMenuOpen)
         }
     }
 

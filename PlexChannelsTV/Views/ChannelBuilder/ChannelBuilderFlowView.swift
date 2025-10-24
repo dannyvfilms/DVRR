@@ -203,7 +203,8 @@ struct ChannelBuilderFlowView: View {
                         availableFields: viewModel.availableFields(for: library),
                         filterCatalog: viewModel.filterCatalog,
                         countState: viewModel.counts[ref.id],
-                        onSpecChange: viewModel.updateSpec
+                        onSpecChange: viewModel.updateSpec,
+                        onMenuStateChange: viewModel.setMenuOpen
                     )
                 }
             } else {
