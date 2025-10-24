@@ -104,6 +104,7 @@ struct ChannelBuilderFlowView: View {
                     plexService: plexService,
                     countState: viewModel.counts[ref.id],
                     availableSortKeys: viewModel.sortCatalog.availableSorts(for: library),
+                    mediaType: library.type,
                     sortDescriptor: sortBinding,
                     shuffleEnabled: shuffleBinding,
                     channelName: $viewModel.draft.name

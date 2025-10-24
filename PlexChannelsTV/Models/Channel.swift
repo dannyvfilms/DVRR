@@ -411,13 +411,32 @@ extension Channel.Media {
     }
 
     var posterArtworkCandidates: [String] {
-        [
-            artwork.thumb,
-            artwork.parentThumb,
-            artwork.grandparentThumb,
-            artwork.art,
-            artwork.grandparentArt
-        ].compactMap { $0 }
+        // For movies, prioritize thumb (poster) over art (background)
+        // For TV episodes, prioritize thumb (episode poster) over parentThumb (season poster)
+        var candidates: [String] = []
+        
+        // Always try thumb first (poster for movies, episode poster for TV)
+        if let thumb = artwork.thumb {
+            candidates.append(thumb)
+        }
+        
+        // For TV episodes, try parentThumb (season poster) and grandparentThumb (show poster)
+        if let parentThumb = artwork.parentThumb {
+            candidates.append(parentThumb)
+        }
+        if let grandparentThumb = artwork.grandparentThumb {
+            candidates.append(grandparentThumb)
+        }
+        
+        // Fall back to background art only if no poster art is available
+        if let art = artwork.art {
+            candidates.append(art)
+        }
+        if let grandparentArt = artwork.grandparentArt {
+            candidates.append(grandparentArt)
+        }
+        
+        return candidates
     }
 
     var logoArtworkCandidates: [String] {

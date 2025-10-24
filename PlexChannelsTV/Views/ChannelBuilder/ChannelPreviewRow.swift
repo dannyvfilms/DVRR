@@ -13,6 +13,7 @@ struct ChannelPreviewRow: View {
     let plexService: PlexService
     let countState: ChannelBuilderViewModel.CountState?
     let availableSortKeys: [SortDescriptor.SortKey]
+    let mediaType: PlexMediaType
     @Binding var sortDescriptor: SortDescriptor
     @Binding var shuffleEnabled: Bool
     @Binding var channelName: String
@@ -54,7 +55,7 @@ struct ChannelPreviewRow: View {
             sortOrderControl
 
             if let countState {
-                CountBadge(state: countState)
+                CountBadge(state: countState, mediaType: mediaType)
             }
         }
     }
@@ -241,6 +242,7 @@ struct ChannelPreviewRow: View {
 
 private struct CountBadge: View {
     let state: ChannelBuilderViewModel.CountState
+    let mediaType: PlexMediaType
 
     var body: some View {
         HStack(spacing: 8) {
@@ -262,7 +264,8 @@ private struct CountBadge: View {
 
     private var countLabel: String {
         if let total = state.total {
-            return state.approximate ? "~\(total)" : "\(total) episodes"
+            let unit = mediaType == .episode ? "episodes" : "items"
+            return state.approximate ? "~\(total) \(unit)" : "\(total) \(unit)"
         }
         return state.isLoading ? "Counting…" : "—"
     }

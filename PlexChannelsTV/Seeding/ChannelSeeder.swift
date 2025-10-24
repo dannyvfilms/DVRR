@@ -94,7 +94,7 @@ final class ChannelSeeder {
         }
     }
 
-    private func fetchItems(from libraries: [PlexLibrary], limitPerLibrary: Int = 800) async throws -> [PlexMediaItem] {
+    private func fetchItems(from libraries: [PlexLibrary], limitPerLibrary: Int? = nil) async throws -> [PlexMediaItem] {
         var allItems: [PlexMediaItem] = []
         for library in libraries {
             do {
@@ -106,10 +106,28 @@ final class ChannelSeeder {
                         return library.type
                     }
                 }()
+                
+                // Use different limits based on library type
+                let effectiveLimit: Int = {
+                    if let customLimit = limitPerLibrary {
+                        return customLimit
+                    }
+                    // For movies, allow up to 10,000 items (no practical limit)
+                    // For TV shows, use 800 to avoid overwhelming the system
+                    switch library.type {
+                    case .movie:
+                        return 10000
+                    case .show, .episode:
+                        return 800
+                    default:
+                        return 800
+                    }
+                }()
+                
                 let items = try await plexService.fetchLibraryItems(
                     for: library,
                     mediaType: targetType,
-                    limit: limitPerLibrary
+                    limit: effectiveLimit
                 )
                 allItems.append(contentsOf: items)
                 print("[ChannelSeeder] Fetched \(items.count) items from \(library.title ?? "library")")

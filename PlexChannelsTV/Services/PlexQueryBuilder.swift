@@ -42,10 +42,21 @@ actor PlexQueryBuilder {
             return cached
         }
 
+        // Apply different default limits based on library type
+        // For movies: allow up to 10,000 items (no practical limit)
+        // For TV episodes: use 800 to avoid overwhelming the system
+        let effectiveLimit: Int? = {
+            if let customLimit = limit {
+                return customLimit
+            }
+            // Don't apply a limit by default - fetch everything
+            return nil
+        }()
+
         let items = try await plexService.fetchLibraryItems(
             for: library,
             mediaType: targetType,
-            limit: limit
+            limit: effectiveLimit
         )
 
         if limit == nil {
