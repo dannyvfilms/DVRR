@@ -267,7 +267,13 @@ private struct CountBadge: View {
             let unit = mediaType == .episode ? "episodes" : "items"
             return state.approximate ? "~\(total) \(unit)" : "\(total) \(unit)"
         }
-        return state.isLoading ? "Counting…" : "—"
+        if state.isLoading {
+            if let progress = state.progressCount {
+                return "\(progress) so far…"
+            }
+            return "Counting…"
+        }
+        return "—"
     }
 }
 

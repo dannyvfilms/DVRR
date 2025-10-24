@@ -309,14 +309,15 @@ final class PlexService: ObservableObject {
         return response.mediaContainer.metadata
     }
 
-    func fetchLibraryItems(for library: PlexLibrary, limit: Int? = nil) async throws -> [PlexMediaItem] {
-        try await fetchLibraryItems(for: library, mediaType: library.type, limit: limit)
+    func fetchLibraryItems(for library: PlexLibrary, limit: Int? = nil, onProgress: ((Int) -> Void)? = nil) async throws -> [PlexMediaItem] {
+        try await fetchLibraryItems(for: library, mediaType: library.type, limit: limit, onProgress: onProgress)
     }
 
     func fetchLibraryItems(
         for library: PlexLibrary,
         mediaType: PlexMediaType,
-        limit: Int? = nil
+        limit: Int? = nil,
+        onProgress: ((Int) -> Void)? = nil
     ) async throws -> [PlexMediaItem] {
         do {
             guard let currentSession = session else {
@@ -365,6 +366,9 @@ final class PlexService: ObservableObject {
                     }
 
                     results.append(contentsOf: page)
+                    
+                    // Report progress
+                    onProgress?(results.count)
 
                     if page.count < batchSize {
                         AppLoggers.net.info("event=plexService.fetchLibraryItems.complete libraryType=\(mediaType.rawValue) pageCount=\(page.count) batchSize=\(batchSize) totalItems=\(results.count)")

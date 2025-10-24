@@ -20,6 +20,7 @@ final class ChannelBuilderViewModel: ObservableObject {
         var isLoading = false
         var total: Int?
         var approximate = false
+        var progressCount: Int? = nil
     }
 
     @Published var step: Step = .libraries {
@@ -52,6 +53,16 @@ final class ChannelBuilderViewModel: ObservableObject {
         self.allLibraries = libraries.sorted { ($0.title ?? "") < ($1.title ?? "") }
         self.queryBuilder = PlexQueryBuilder(plexService: plexService)
         self.filterCatalog = PlexFilterCatalog(plexService: plexService, queryBuilder: queryBuilder)
+        
+        // Set up progress callback
+        Task {
+            await queryBuilder.setProgressCallback { [weak self] libraryID, count in
+                Task { @MainActor in
+                    self?.updateCountProgress(for: libraryID, count: count)
+                }
+            }
+        }
+        
         AppLoggers.channel.info("event=builder.view.show step=\(self.step.telemetryValue, privacy: .public)")
     }
 
@@ -268,6 +279,17 @@ final class ChannelBuilderViewModel: ObservableObject {
 
     private func notifyPreviewUpdateNeeded() {
         previewUpdateTrigger = UUID()
+    }
+
+    private func updateCountProgress(for libraryID: String, count: Int) {
+        if let current = counts[libraryID], current.isLoading {
+            counts[libraryID] = CountState(
+                isLoading: true,
+                total: current.total,
+                approximate: current.approximate,
+                progressCount: count
+            )
+        }
     }
 
     private func updateSuggestedNameIfNeeded() {

@@ -16,9 +16,14 @@ actor PlexQueryBuilder {
 
     private let plexService: PlexService
     private var mediaCache: [String: [PlexMediaItem]] = [:]
+    private var progressCallback: ((String, Int) -> Void)?
 
     init(plexService: PlexService) {
         self.plexService = plexService
+    }
+    
+    func setProgressCallback(_ callback: @escaping (String, Int) -> Void) {
+        progressCallback = callback
     }
 
     private func preferredMediaType(for library: PlexLibrary) -> PlexMediaType {
@@ -36,6 +41,10 @@ actor PlexQueryBuilder {
     
     func invalidateAllCache() {
         mediaCache.removeAll()
+    }
+    
+    func updateProgress(for libraryID: String, count: Int) {
+        progressCallback?(libraryID, count)
     }
 
     func mediaSnapshot(for library: PlexLibrary, limit: Int? = nil) async throws -> [PlexMediaItem] {
@@ -65,7 +74,12 @@ actor PlexQueryBuilder {
         let items = try await plexService.fetchLibraryItems(
             for: library,
             mediaType: targetType,
-            limit: effectiveLimit
+            limit: effectiveLimit,
+            onProgress: { [weak self] count in
+                Task {
+                    await self?.updateProgress(for: library.uuid, count: count)
+                }
+            }
         )
 
         AppLoggers.channel.info("event=queryBuilder.snapshot.fetched libraryType=\(library.type.rawValue) libraryID=\(library.uuid, privacy: .public) itemCount=\(items.count) limit=\(effectiveLimit ?? -1)")
