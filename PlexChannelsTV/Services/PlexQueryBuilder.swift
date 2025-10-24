@@ -45,6 +45,7 @@ actor PlexQueryBuilder {
         // Only use cache if we're not requesting the full library
         // This ensures that when we want the full library, we always fetch fresh
         if limit != nil, let cached = mediaCache[cacheKey] {
+            AppLoggers.channel.info("event=queryBuilder.snapshot.cache libraryType=\(library.type) libraryID=\(library.uuid, privacy: .public) itemCount=\(cached.count) limit=\(limit ?? -1)")
             return cached
         }
 
@@ -59,11 +60,15 @@ actor PlexQueryBuilder {
             return nil
         }()
 
+        AppLoggers.channel.info("event=queryBuilder.snapshot.fetch libraryType=\(library.type) libraryID=\(library.uuid, privacy: .public) limit=\(effectiveLimit ?? -1)")
+
         let items = try await plexService.fetchLibraryItems(
             for: library,
             mediaType: targetType,
             limit: effectiveLimit
         )
+
+        AppLoggers.channel.info("event=queryBuilder.snapshot.fetched libraryType=\(library.type) libraryID=\(library.uuid, privacy: .public) itemCount=\(items.count) limit=\(effectiveLimit ?? -1)")
 
         // Only cache if we're not fetching the full library
         // This prevents the cache from being populated with limited results
@@ -93,8 +98,10 @@ actor PlexQueryBuilder {
         // Clear cache to ensure we get the full library for movies
         if library.type == .movie {
             invalidateCache(for: library.uuid)
+            AppLoggers.channel.info("event=queryBuilder.count.clearCache libraryType=movie libraryID=\(library.uuid, privacy: .public)")
         }
         let items = try await mediaSnapshot(for: library, limit: nil)
+        AppLoggers.channel.info("event=queryBuilder.count.snapshot libraryType=\(library.type) libraryID=\(library.uuid, privacy: .public) itemCount=\(items.count)")
         guard !group.isEmpty else { return items.count }
         return items.reduce(into: 0) { partial, item in
             if matches(item, group: group) {
