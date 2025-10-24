@@ -33,6 +33,10 @@ actor PlexQueryBuilder {
     func invalidateCache(for libraryID: String) {
         mediaCache.removeValue(forKey: libraryID)
     }
+    
+    func invalidateAllCache() {
+        mediaCache.removeAll()
+    }
 
     func mediaSnapshot(for library: PlexLibrary, limit: Int? = nil) async throws -> [PlexMediaItem] {
         let cacheKey = library.uuid
@@ -86,6 +90,10 @@ actor PlexQueryBuilder {
         }
         
         // For movies or episode-only filtering, use standard approach
+        // Clear cache to ensure we get the full library for movies
+        if library.type == .movie {
+            invalidateCache(for: library.uuid)
+        }
         let items = try await mediaSnapshot(for: library, limit: nil)
         guard !group.isEmpty else { return items.count }
         return items.reduce(into: 0) { partial, item in
@@ -101,6 +109,10 @@ actor PlexQueryBuilder {
         sort descriptor: SortDescriptor?,
         limit: Int? = nil
     ) async throws -> [PlexMediaItem] {
+        // Clear cache to ensure we get the full library for movies
+        if library.type == .movie {
+            invalidateCache(for: library.uuid)
+        }
         var items = try await mediaSnapshot(for: library, limit: nil)
         if !group.isEmpty {
             items = items.filter { matches($0, group: group) }
