@@ -182,7 +182,14 @@ final class ChannelBuilderViewModel: ObservableObject {
 
     func scheduleCountUpdate(for ref: LibraryFilterSpec.LibraryRef, group: FilterGroup) {
         let id = ref.id
-        countTasks[id]?.cancel()
+        
+        // Don't cancel ongoing tasks - let them complete and use cached results
+        // This prevents CancellationError during long TV show fetches
+        if countTasks[id] != nil {
+            AppLoggers.channel.info("event=builder.count.skip libraryID=\(id, privacy: .public) reason=ongoingFetch")
+            return
+        }
+        
         let current = counts[id] ?? CountState()
         counts[id] = CountState(isLoading: true, total: current.total, approximate: current.approximate)
         AppLoggers.channel.info("event=builder.count.start libraryID=\(id, privacy: .public)")
@@ -198,6 +205,8 @@ final class ChannelBuilderViewModel: ObservableObject {
                     self.counts[id] = CountState(isLoading: false, total: total, approximate: false)
                     // Trigger preview update after count completes
                     self.notifyPreviewUpdateNeeded()
+                    // Clear the task so new operations can start
+                    self.countTasks[id] = nil
                 }
                 let elapsed = Int(Date().timeIntervalSince(startedAt) * 1000)
                 AppLoggers.channel.info("event=builder.count.ok libraryID=\(id, privacy: .public) total=\(total) elapsedMs=\(elapsed) remote=false")
@@ -205,6 +214,8 @@ final class ChannelBuilderViewModel: ObservableObject {
                 await MainActor.run {
                     self.counts[id] = CountState(isLoading: false, total: nil, approximate: false)
                     self.errorMessage = error.localizedDescription
+                    // Clear the task so new operations can start
+                    self.countTasks[id] = nil
                 }
                 let elapsed = Int(Date().timeIntervalSince(startedAt) * 1000)
                 AppLoggers.channel.error("event=builder.count.fail libraryID=\(id, privacy: .public) elapsedMs=\(elapsed) error=\(String(describing: error), privacy: .public)")
