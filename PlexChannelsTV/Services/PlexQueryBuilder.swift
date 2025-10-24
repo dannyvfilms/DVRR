@@ -17,6 +17,7 @@ actor PlexQueryBuilder {
     private let plexService: PlexService
     private var mediaCache: [String: [PlexMediaItem]] = [:]
     private var progressCallback: ((String, Int) -> Void)?
+    private var activeFetches: Set<String> = []
 
     init(plexService: PlexService) {
         self.plexService = plexService
@@ -57,6 +58,20 @@ actor PlexQueryBuilder {
             AppLoggers.channel.info("event=queryBuilder.snapshot.cache libraryType=\(library.type.rawValue) libraryID=\(library.uuid, privacy: .public) itemCount=\(cached.count) limit=\(limit ?? -1)")
             return cached
         }
+        
+        // Check if we're already fetching this library
+        if activeFetches.contains(cacheKey) {
+            AppLoggers.channel.info("event=queryBuilder.snapshot.waiting libraryType=\(library.type.rawValue) libraryID=\(library.uuid, privacy: .public) reason=concurrentFetch")
+            // Wait for the active fetch to complete
+            while activeFetches.contains(cacheKey) {
+                try await Task.sleep(nanoseconds: 100_000_000) // 100ms
+            }
+            // Return cached result if available
+            if let cached = mediaCache[cacheKey] {
+                AppLoggers.channel.info("event=queryBuilder.snapshot.cachedAfterWait libraryType=\(library.type.rawValue) libraryID=\(library.uuid, privacy: .public) itemCount=\(cached.count)")
+                return cached
+            }
+        }
 
         // Apply different default limits based on library type
         // For movies: allow up to 10,000 items (no practical limit)
@@ -71,16 +86,29 @@ actor PlexQueryBuilder {
 
         AppLoggers.channel.info("event=queryBuilder.snapshot.fetch libraryType=\(library.type.rawValue) libraryID=\(library.uuid, privacy: .public) limit=\(effectiveLimit ?? -1)")
 
-        let items = try await plexService.fetchLibraryItems(
-            for: library,
-            mediaType: targetType,
-            limit: effectiveLimit,
-            onProgress: { [weak self] count in
-                Task {
-                    await self?.updateProgress(for: library.uuid, count: count)
+        // Mark this fetch as active
+        activeFetches.insert(cacheKey)
+        
+        let items: [PlexMediaItem]
+        do {
+            items = try await plexService.fetchLibraryItems(
+                for: library,
+                mediaType: targetType,
+                limit: effectiveLimit,
+                onProgress: { [weak self] count in
+                    Task {
+                        await self?.updateProgress(for: library.uuid, count: count)
+                    }
                 }
-            }
-        )
+            )
+        } catch {
+            // Remove from active fetches on error
+            activeFetches.remove(cacheKey)
+            throw error
+        }
+        
+        // Remove from active fetches on success
+        activeFetches.remove(cacheKey)
 
         AppLoggers.channel.info("event=queryBuilder.snapshot.fetched libraryType=\(library.type.rawValue) libraryID=\(library.uuid, privacy: .public) itemCount=\(items.count) limit=\(effectiveLimit ?? -1)")
 
@@ -109,11 +137,7 @@ actor PlexQueryBuilder {
         }
         
         // For movies or episode-only filtering, use standard approach
-        // Clear cache to ensure we get the full library for movies
-        if library.type == .movie {
-            invalidateCache(for: library.uuid)
-            AppLoggers.channel.info("event=queryBuilder.count.clearCache libraryType=movie libraryID=\(library.uuid, privacy: .public)")
-        }
+        // Don't clear cache - use existing data for filtering
         let items = try await mediaSnapshot(for: library, limit: nil)
         AppLoggers.channel.info("event=queryBuilder.count.snapshot libraryType=\(library.type.rawValue) libraryID=\(library.uuid, privacy: .public) itemCount=\(items.count)")
         guard !group.isEmpty else { return items.count }
@@ -130,10 +154,7 @@ actor PlexQueryBuilder {
         sort descriptor: SortDescriptor?,
         limit: Int? = nil
     ) async throws -> [PlexMediaItem] {
-        // Clear cache to ensure we get the full library for movies
-        if library.type == .movie {
-            invalidateCache(for: library.uuid)
-        }
+        // Use existing cached data for filtering
         var items = try await mediaSnapshot(for: library, limit: nil)
         if !group.isEmpty {
             items = items.filter { matches($0, group: group) }
