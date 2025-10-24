@@ -134,8 +134,8 @@ actor PlexQueryBuilder {
             return media.count
         }
         
-        // For movies or episode-only filtering, use standard approach
-        // Don't clear cache - use existing data for filtering
+        // For movies, TV shows without show-level filters, or episode-only filtering, use standard approach
+        // Use cached data for filtering
         let items = try await mediaSnapshot(for: library, limit: nil)
         AppLoggers.channel.info("event=queryBuilder.count.snapshot libraryType=\(library.type.rawValue) libraryID=\(library.uuid, privacy: .public) itemCount=\(items.count)")
         guard !group.isEmpty else { return items.count }
@@ -152,7 +152,16 @@ actor PlexQueryBuilder {
         sort descriptor: SortDescriptor?,
         limit: Int? = nil
     ) async throws -> [PlexMediaItem] {
-        // Use existing cached data for filtering
+        // For TV libraries with show-level filters, use two-step process
+        if library.type == .show && hasShowLevelFilters(group) {
+            // For TV shows with show-level filters, we need to use the TV-specific logic
+            // But we can't return Channel.Media from this method, so we'll handle this differently
+            // For now, fall back to standard approach for TV shows with show-level filters
+            AppLoggers.channel.info("event=queryBuilder.fetchMedia.tvShowWithFilters using standard approach")
+        }
+        
+        // For movies, TV shows without show-level filters, or episode-only filtering, use standard approach
+        // Use cached data for filtering
         var items = try await mediaSnapshot(for: library, limit: nil)
         if !group.isEmpty {
             items = items.filter { matches($0, group: group) }
@@ -262,12 +271,8 @@ private extension PlexQueryBuilder {
         
         AppLoggers.channel.info("event=tvFilter.start showFilterEmpty=\(showFilters.isEmpty) episodeFilterEmpty=\(episodeFilters.isEmpty)")
         
-        // Step 2: Fetch all shows and filter by show-level criteria
-        let allShows = try await plexService.fetchLibraryItems(
-            for: library,
-            mediaType: .show,
-            limit: nil
-        )
+        // Step 2: Get all shows from cache (already fetched by mediaSnapshot)
+        let allShows = try await mediaSnapshot(for: library, limit: nil)
         
         AppLoggers.channel.info("event=tvFilter.fetchedShows count=\(allShows.count)")
         
