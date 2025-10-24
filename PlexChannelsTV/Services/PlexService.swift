@@ -368,6 +368,13 @@ final class PlexService: ObservableObject {
 
                     if page.count < batchSize {
                         AppLoggers.net.info("event=plexService.fetchLibraryItems.complete libraryType=\(mediaType.rawValue) pageCount=\(page.count) batchSize=\(batchSize) totalItems=\(results.count)")
+                        // For movies, continue fetching even if page is smaller than batch size
+                        // This handles cases where Plex returns 399 items instead of 400
+                        if mediaType == .movie && page.count > 0 {
+                            AppLoggers.net.info("event=plexService.fetchLibraryItems.continue libraryType=movie pageCount=\(page.count) batchSize=\(batchSize)")
+                            start += page.count
+                            continue
+                        }
                         break
                     }
 
