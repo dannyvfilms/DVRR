@@ -30,7 +30,7 @@ actor PlexQueryBuilder {
     private func preferredMediaType(for library: PlexLibrary) -> PlexMediaType {
         switch library.type {
         case .show:
-            return .show  // Fetch shows first, then get episodes from matching shows
+            return .episode
         default:
             return library.type
         }
