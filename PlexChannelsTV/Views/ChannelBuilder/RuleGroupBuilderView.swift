@@ -306,11 +306,6 @@ private struct FilterRuleEditor: View {
             .scaleEffect(focusedField == .fieldPicker ? 1.015 : 1.0)
             .shadow(color: focusedField == .fieldPicker ? .accentColor.opacity(0.3) : .clear, radius: 6, x: 0, y: 2)
             .animation(.easeInOut(duration: 0.15), value: focusedField == .fieldPicker)
-            .onTapGesture {
-                // Mark menu as open when tapped
-                isMenuOpen = true
-                onMenuStateChange?(true)
-            }
             
             // Operator picker - dropdown menu with focus handling
             Menu {
@@ -345,11 +340,6 @@ private struct FilterRuleEditor: View {
             .scaleEffect(focusedField == .operatorPicker ? 1.015 : 1.0)
             .shadow(color: focusedField == .operatorPicker ? .accentColor.opacity(0.3) : .clear, radius: 6, x: 0, y: 2)
             .animation(.easeInOut(duration: 0.15), value: focusedField == .operatorPicker)
-            .onTapGesture {
-                // Mark menu as open when tapped
-                isMenuOpen = true
-                onMenuStateChange?(true)
-            }
 
             // Value editor
             valueEditor
@@ -388,20 +378,10 @@ private struct FilterRuleEditor: View {
             onRuleChange?()
         }
         .onChange(of: focusedField) { _, newValue in
+            // When a menu field has focus, the dropdown is open
             let isMenuOpen = newValue != nil
             self.isMenuOpen = isMenuOpen
             onMenuStateChange?(isMenuOpen)
-            
-            // If focus is lost, mark menu as closed
-            if newValue == nil && self.isMenuOpen {
-                self.isMenuOpen = false
-                onMenuStateChange?(false)
-            }
-        }
-        .onAppear {
-            // Reset menu state when view appears
-            self.isMenuOpen = false
-            onMenuStateChange?(false)
         }
     }
 
@@ -491,11 +471,6 @@ private struct FilterRuleEditor: View {
             .scaleEffect(focusedField == .valuePicker ? 1.015 : 1.0)
             .shadow(color: focusedField == .valuePicker ? .accentColor.opacity(0.3) : .clear, radius: 6, x: 0, y: 2)
             .animation(.easeInOut(duration: 0.15), value: focusedField == .valuePicker)
-            .onTapGesture {
-                // Mark menu as open when tapped
-                isMenuOpen = true
-                onMenuStateChange?(true)
-            }
         }
     }
 
