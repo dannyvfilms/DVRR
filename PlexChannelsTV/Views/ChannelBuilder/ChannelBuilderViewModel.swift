@@ -203,6 +203,14 @@ final class ChannelBuilderViewModel: ObservableObject {
             do {
                 let total = try await self.queryBuilder.count(library: library, using: group)
                 await MainActor.run {
+                    // Don't update final count if a menu is open to prevent UI interference
+                    if self.isMenuOpen {
+                        AppLoggers.channel.info("event=builder.count.skipped libraryID=\(id, privacy: .public) reason=menuOpen")
+                        // Clear the task so new operations can start
+                        self.countTasks[id] = nil
+                        return
+                    }
+                    
                     self.counts[id] = CountState(isLoading: false, total: total, approximate: false)
                     // Trigger preview update after count completes
                     self.notifyPreviewUpdateNeeded()
@@ -213,6 +221,14 @@ final class ChannelBuilderViewModel: ObservableObject {
                 AppLoggers.channel.info("event=builder.count.ok libraryID=\(id, privacy: .public) total=\(total) elapsedMs=\(elapsed) remote=false")
             } catch {
                 await MainActor.run {
+                    // Don't update final count if a menu is open to prevent UI interference
+                    if self.isMenuOpen {
+                        AppLoggers.channel.info("event=builder.count.skipped libraryID=\(id, privacy: .public) reason=menuOpen")
+                        // Clear the task so new operations can start
+                        self.countTasks[id] = nil
+                        return
+                    }
+                    
                     self.counts[id] = CountState(isLoading: false, total: nil, approximate: false)
                     self.errorMessage = error.localizedDescription
                     // Clear the task so new operations can start
