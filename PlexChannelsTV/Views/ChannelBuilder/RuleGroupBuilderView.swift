@@ -261,6 +261,7 @@ private struct FilterRuleEditor: View {
     @State private var relativePreset: RelativeDatePreset = .last30Days
     
     @FocusState private var focusedField: FocusedRuleField?
+    @State private var isMenuOpen = false
     
     private enum FocusedRuleField: Hashable {
         case fieldPicker
@@ -305,11 +306,10 @@ private struct FilterRuleEditor: View {
             .scaleEffect(focusedField == .fieldPicker ? 1.015 : 1.0)
             .shadow(color: focusedField == .fieldPicker ? .accentColor.opacity(0.3) : .clear, radius: 6, x: 0, y: 2)
             .animation(.easeInOut(duration: 0.15), value: focusedField == .fieldPicker)
-            .onAppear {
+            .onTapGesture {
+                // Mark menu as open when tapped
+                isMenuOpen = true
                 onMenuStateChange?(true)
-            }
-            .onDisappear {
-                onMenuStateChange?(false)
             }
             
             // Operator picker - dropdown menu with focus handling
@@ -345,11 +345,10 @@ private struct FilterRuleEditor: View {
             .scaleEffect(focusedField == .operatorPicker ? 1.015 : 1.0)
             .shadow(color: focusedField == .operatorPicker ? .accentColor.opacity(0.3) : .clear, radius: 6, x: 0, y: 2)
             .animation(.easeInOut(duration: 0.15), value: focusedField == .operatorPicker)
-            .onAppear {
+            .onTapGesture {
+                // Mark menu as open when tapped
+                isMenuOpen = true
                 onMenuStateChange?(true)
-            }
-            .onDisappear {
-                onMenuStateChange?(false)
             }
 
             // Value editor
@@ -390,10 +389,18 @@ private struct FilterRuleEditor: View {
         }
         .onChange(of: focusedField) { _, newValue in
             let isMenuOpen = newValue != nil
+            self.isMenuOpen = isMenuOpen
             onMenuStateChange?(isMenuOpen)
+            
+            // If focus is lost, mark menu as closed
+            if newValue == nil && self.isMenuOpen {
+                self.isMenuOpen = false
+                onMenuStateChange?(false)
+            }
         }
         .onAppear {
             // Reset menu state when view appears
+            self.isMenuOpen = false
             onMenuStateChange?(false)
         }
     }
@@ -484,11 +491,10 @@ private struct FilterRuleEditor: View {
             .scaleEffect(focusedField == .valuePicker ? 1.015 : 1.0)
             .shadow(color: focusedField == .valuePicker ? .accentColor.opacity(0.3) : .clear, radius: 6, x: 0, y: 2)
             .animation(.easeInOut(duration: 0.15), value: focusedField == .valuePicker)
-            .onAppear {
+            .onTapGesture {
+                // Mark menu as open when tapped
+                isMenuOpen = true
                 onMenuStateChange?(true)
-            }
-            .onDisappear {
-                onMenuStateChange?(false)
             }
         }
     }
