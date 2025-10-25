@@ -305,6 +305,12 @@ private struct FilterRuleEditor: View {
             .scaleEffect(focusedField == .fieldPicker ? 1.015 : 1.0)
             .shadow(color: focusedField == .fieldPicker ? .accentColor.opacity(0.3) : .clear, radius: 6, x: 0, y: 2)
             .animation(.easeInOut(duration: 0.15), value: focusedField == .fieldPicker)
+            .onAppear {
+                onMenuStateChange?(true)
+            }
+            .onDisappear {
+                onMenuStateChange?(false)
+            }
             
             // Operator picker - dropdown menu with focus handling
             Menu {
@@ -339,6 +345,12 @@ private struct FilterRuleEditor: View {
             .scaleEffect(focusedField == .operatorPicker ? 1.015 : 1.0)
             .shadow(color: focusedField == .operatorPicker ? .accentColor.opacity(0.3) : .clear, radius: 6, x: 0, y: 2)
             .animation(.easeInOut(duration: 0.15), value: focusedField == .operatorPicker)
+            .onAppear {
+                onMenuStateChange?(true)
+            }
+            .onDisappear {
+                onMenuStateChange?(false)
+            }
 
             // Value editor
             valueEditor
@@ -379,6 +391,10 @@ private struct FilterRuleEditor: View {
         .onChange(of: focusedField) { _, newValue in
             let isMenuOpen = newValue != nil
             onMenuStateChange?(isMenuOpen)
+        }
+        .onAppear {
+            // Reset menu state when view appears
+            onMenuStateChange?(false)
         }
     }
 
@@ -468,6 +484,12 @@ private struct FilterRuleEditor: View {
             .scaleEffect(focusedField == .valuePicker ? 1.015 : 1.0)
             .shadow(color: focusedField == .valuePicker ? .accentColor.opacity(0.3) : .clear, radius: 6, x: 0, y: 2)
             .animation(.easeInOut(duration: 0.15), value: focusedField == .valuePicker)
+            .onAppear {
+                onMenuStateChange?(true)
+            }
+            .onDisappear {
+                onMenuStateChange?(false)
+            }
         }
     }
 
