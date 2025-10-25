@@ -94,7 +94,12 @@ private extension PlexFilterCatalog {
         for field: FilterField,
         library: PlexLibrary
     ) async throws -> [FilterOption] {
-        let items = try await queryBuilder.mediaSnapshot(for: library, limit: 600)
+        // Use direct Plex API call instead of queryBuilder to avoid blocking
+        let items = try await plexService.fetchLibraryItems(
+            for: library,
+            mediaType: library.type,
+            limit: 600
+        )
         var accumulator: [String: Int] = [:]
 
         for item in items {

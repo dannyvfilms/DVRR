@@ -43,6 +43,7 @@ final class ChannelBuilderViewModel: ObservableObject {
     private var allowedType: PlexMediaType?
     private var countTasks: [String: Task<Void, Never>] = [:]
     private var isMenuOpen = false
+    private var lastProgressUpdate: [String: Date] = [:]
 
     init(
         plexService: PlexService,
@@ -320,6 +321,16 @@ final class ChannelBuilderViewModel: ObservableObject {
             AppLoggers.channel.info("event=builder.progress.skipped libraryID=\(libraryID, privacy: .public) reason=menuOpen")
             return
         }
+        
+        // Rate limit progress updates to 5 seconds
+        let now = Date()
+        if let lastUpdate = lastProgressUpdate[libraryID],
+           now.timeIntervalSince(lastUpdate) < 5.0 {
+            AppLoggers.channel.info("event=builder.progress.skipped libraryID=\(libraryID, privacy: .public) reason=rateLimit")
+            return
+        }
+        
+        lastProgressUpdate[libraryID] = now
         
         if let current = counts[libraryID], current.isLoading {
             counts[libraryID] = CountState(
