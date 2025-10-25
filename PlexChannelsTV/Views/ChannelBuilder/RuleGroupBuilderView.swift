@@ -378,20 +378,10 @@ private struct FilterRuleEditor: View {
             onRuleChange?()
         }
         .onChange(of: focusedField) { _, newValue in
-            // When a menu field has focus, assume dropdown is open
+            // When a menu field has focus, the dropdown is open
             let isMenuOpen = newValue != nil
             self.isMenuOpen = isMenuOpen
             onMenuStateChange?(isMenuOpen)
-        }
-        .onAppear {
-            // Reset menu state when view appears
-            self.isMenuOpen = false
-            onMenuStateChange?(false)
-        }
-        .onDisappear {
-            // Reset menu state when view disappears
-            self.isMenuOpen = false
-            onMenuStateChange?(false)
         }
     }
 
