@@ -21,6 +21,7 @@ final class ChannelBuilderViewModel: ObservableObject {
         var total: Int?
         var approximate = false
         var progressCount: Int? = nil
+        var lastUpdated: Date? = nil
     }
 
     @Published var step: Step = .libraries {
@@ -38,6 +39,7 @@ final class ChannelBuilderViewModel: ObservableObject {
     let queryBuilder: PlexQueryBuilder
     let filterCatalog: PlexFilterCatalog
     let sortCatalog = PlexSortCatalog()
+    let cacheStore = LibraryMediaCacheStore.shared
     let allLibraries: [PlexLibrary]
 
     private var allowedType: PlexMediaType?
@@ -212,7 +214,7 @@ final class ChannelBuilderViewModel: ObservableObject {
                         return
                     }
                     
-                    self.counts[id] = CountState(isLoading: false, total: total, approximate: false)
+                    self.counts[id] = CountState(isLoading: false, total: total, approximate: false, lastUpdated: Date())
                     // Trigger preview update after count completes
                     self.notifyPreviewUpdateNeeded()
                     // Clear the task so new operations can start
@@ -357,6 +359,53 @@ final class ChannelBuilderViewModel: ObservableObject {
             }
         } else {
             draft.name = "Channel"
+        }
+    }
+    
+    /// Manually refresh the library cache for a specific library
+    func refreshLibraryCache(for libraryID: String) {
+        guard let library = library(for: libraryID) else { return }
+        
+        AppLoggers.channel.info("event=builder.refresh.manual libraryID=\(libraryID, privacy: .public)")
+        
+        // Cancel any existing count task for this library
+        countTasks[libraryID]?.cancel()
+        countTasks[libraryID] = nil
+        
+        // Force a background refresh in the query builder
+        Task {
+            do {
+                // Get the current filter spec for this library
+                let ref = draft.selectedLibraries.first { $0.id == libraryID }
+                let spec = ref.map { self.spec(for: $0) } ?? LibraryFilterSpec(
+                    reference: LibraryFilterSpec.LibraryRef(
+                        id: libraryID,
+                        key: library.key,
+                        title: library.title,
+                        type: library.type
+                    ),
+                    rootGroup: FilterGroup()
+                )
+                
+                // Force refresh the cache
+                await queryBuilder.forceRefreshLibraryCache(for: library)
+                
+                // Update the count
+                let total = try await queryBuilder.count(library: library, using: spec.rootGroup)
+                await MainActor.run {
+                    self.counts[libraryID] = CountState(
+                        isLoading: false,
+                        total: total,
+                        approximate: false,
+                        lastUpdated: Date()
+                    )
+                    self.notifyPreviewUpdateNeeded()
+                }
+                
+                AppLoggers.channel.info("event=builder.refresh.manualComplete libraryID=\(libraryID, privacy: .public) total=\(total)")
+            } catch {
+                AppLoggers.channel.error("event=builder.refresh.manualFailed libraryID=\(libraryID, privacy: .public) error=\(String(describing: error), privacy: .public)")
+            }
         }
     }
 }

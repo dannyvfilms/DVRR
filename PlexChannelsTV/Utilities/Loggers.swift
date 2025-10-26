@@ -15,6 +15,7 @@ enum AppLoggers {
     static let channel = Logger(subsystem: subsystem, category: "Channel")
     static let playback = Logger(subsystem: subsystem, category: "Playback")
     static let net = Logger(subsystem: subsystem, category: "Net")
+    static let cache = Logger(subsystem: subsystem, category: "Cache")
 }
 
 extension URL {

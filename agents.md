@@ -101,11 +101,21 @@ Native **tvOS 17+** SwiftUI app that creates **fake "live TV" channels** from a 
 
 #### `PlexQueryBuilder` (Channel Builder)
 **Purpose**: Translates filter rules into Plex API queries or client-side filtering  
+**Architecture**: `actor` for thread-safe concurrent operations
 **Key Methods**:
 - `buildChannelMedia(library:using:sort:limit:)` - Executes filter group and returns matching media
 - `count(library:using:)` - Returns count of items matching filters (for live count badge)
+- `mediaSnapshot(for:limit:mediaType:)` - Cached media fetching with progress callbacks
+- `buildChannelMediaForTVShows()` - Two-step TV show filtering (shows → episodes)
 
 **Pattern**: Translates `FilterGroup` → server-side query where possible; falls back to client-side filtering when needed. Handles nested groups with Match All/Any logic.
+
+**Critical Features**:
+- **Actor-based concurrency** - Thread-safe media caching and concurrent access
+- **TV Show Two-Step Filtering** - Separates show-level vs episode-level filters
+- **Progress callbacks** - Real-time updates during long operations
+- **Concurrent fetch prevention** - Prevents duplicate API calls for same library
+- **Cache invalidation** - `invalidateCache(for:)` and `invalidateAllCache()`
 
 #### `PlexSortCatalog` (Channel Builder)
 **Purpose**: Provides available sort options for library types  
@@ -452,7 +462,208 @@ var body: some View {
 - `.frame(maxWidth: .infinity, maxHeight: .infinity)` ensures background fills entire screen
 - Applies to: `ChannelBuilderFlowView`, any custom modal presentations
 
-### 7. Button Scaling & Clipping Prevention
+### 7. Actor-Based Concurrency
+
+**Pattern**: Use `actor` for thread-safe concurrent operations that manage shared state.
+
+**✅ DO THIS**:
+```swift
+actor PlexQueryBuilder {
+    private var mediaCache: [String: [PlexMediaItem]] = [:]
+    private var activeFetches: Set<String> = []
+    
+    func mediaSnapshot(for library: PlexLibrary) async throws -> [PlexMediaItem] {
+        // Actor ensures thread-safe access to cache and activeFetches
+        if let cached = mediaCache[cacheKey] {
+            return cached
+        }
+        // ... fetch and cache
+    }
+}
+```
+
+**Why**: 
+- Prevents race conditions in concurrent media fetching
+- Ensures cache consistency across multiple async operations
+- Provides structured concurrency for complex state management
+- Critical for `PlexQueryBuilder` which manages shared caches and progress callbacks
+
+### 8. TV Show Two-Step Filtering
+
+**The Problem**: TV shows require filtering at both show-level (title, year, genre) and episode-level (episode title, season) metadata.
+
+**Pattern**:
+```swift
+// Step 1: Determine if filters target show-level fields
+func hasShowLevelFilters(_ group: FilterGroup) -> Bool {
+    // Check if any rules target show.title, show.year, etc.
+}
+
+// Step 2: Separate filters
+let showFilters = extractShowLevelFilters(group)
+let episodeFilters = extractEpisodeLevelFilters(group)
+
+// Step 3: Filter shows first, then expand to episodes
+let matchingShows = allShows.filter { matches($0, group: showFilters) }
+let allEpisodes = matchingShows.flatMap { fetchEpisodes(for: $0) }
+let finalEpisodes = allEpisodes.filter { matches($0, group: episodeFilters) }
+```
+
+**Why**: Plex stores TV metadata hierarchically - show metadata is separate from episode metadata. Must filter shows first, then fetch their episodes.
+
+### 9. Deterministic Randomization
+
+**Pattern**: Use seeded random number generation for consistent "random" ordering.
+
+```swift
+struct SeededRandomNumberGenerator: RandomNumberGenerator {
+    private var state: UInt64
+    
+    init(seed: UInt64) {
+        self.state = seed == 0 ? 0xC0FFEE : seed
+    }
+    
+    mutating func next() -> UInt64 {
+        state = state &* 6364136223846793005 &+ 1
+        return state
+    }
+}
+
+// Usage in channel creation
+let channelID = UUID()
+var generator = SeededRandomNumberGenerator(seed: deterministicSeed(for: channelID))
+finalMedia.shuffle(using: &generator)
+```
+
+**Why**: Ensures same "random" order across app launches. Users expect consistent channel ordering.
+
+### 10. Text Input Sanitization
+
+**Pattern**: Sanitize text input to prevent filtering failures from invisible Unicode characters.
+
+```swift
+let sanitized = newValue.trimmingCharacters(in: .whitespacesAndNewlines)
+    .replacingOccurrences(of: "\u{FFFC}", with: "") // Object replacement character
+    .replacingOccurrences(of: "\u{200B}", with: "") // Zero-width space
+    .replacingOccurrences(of: "\u{200C}", with: "") // Zero-width non-joiner
+    .replacingOccurrences(of: "\u{200D}", with: "") // Zero-width joiner
+    .replacingOccurrences(of: "\u{FEFF}", with: "") // Zero-width no-break space
+```
+
+**Why**: Invisible Unicode characters can break Plex API filtering. Users can paste text with these characters from other apps.
+
+### 11. Advanced Playback Recovery
+
+**Pattern**: Sophisticated adaptive bitrate system with multiple recovery strategies.
+
+```swift
+struct AdaptiveState {
+    var bitrateCap: Int = 8_000
+    var downshiftCount: Int = 0
+    var forceTranscode: Bool = false
+    var lowThroughputStart: Date?
+    var lastRecovery: Date?
+}
+
+enum RecoveryCause {
+    case stall
+    case throughput(observed: Int, indicated: Int)
+}
+
+func attemptRecovery(for plan: StreamPlan, entry: PlaybackEntry, cause: RecoveryCause) {
+    // Complex logic for different recovery scenarios
+    // - First stall: 40% bitrate reduction
+    // - Subsequent stalls: 30% reduction
+    // - Force transcode after 2 downshifts
+    // - Force new session to prevent stale transcoder
+}
+```
+
+**Why**: Network conditions vary. Must adapt bitrate proactively and recover from stalls intelligently.
+
+### 12. Focus Section Management
+
+**Pattern**: Use `.focusSectionIfAvailable()` for better tvOS navigation.
+
+```swift
+extension View {
+    @ViewBuilder
+    func focusSectionIfAvailable() -> some View {
+        if #available(tvOS 14.0, *) {
+            self.focusSection()
+        } else {
+            self
+        }
+    }
+}
+
+// Usage
+VStack {
+    content
+        .focusSectionIfAvailable()
+    footer
+        .focusSectionIfAvailable()
+}
+```
+
+**Why**: Improves navigation between different UI areas. Prevents focus conflicts in complex layouts.
+
+### 13. Secure Logging Patterns
+
+**Pattern**: Redact sensitive information from logs while maintaining debugging value.
+
+```swift
+extension URL {
+    func redactedForLogging() -> String {
+        guard var components = URLComponents(url: self, resolvingAgainstBaseURL: true) else {
+            return absoluteString
+        }
+        
+        if let items = components.queryItems, !items.isEmpty {
+            components.queryItems = items.map { item in
+                if item.name.caseInsensitiveCompare("X-Plex-Token") == .orderedSame {
+                    return URLQueryItem(name: item.name, value: "‹redacted›")
+                }
+                if let value = item.value, value.count > 128 {
+                    return URLQueryItem(name: item.name, value: String(value.prefix(125)) + "...")
+                }
+                return item
+            }
+        }
+        return components.string ?? absoluteString
+    }
+}
+```
+
+**Why**: Plex tokens are sensitive. Must redact them from logs while keeping URLs useful for debugging.
+
+### 14. Memory Management Patterns
+
+**Pattern**: Proper cleanup and weak references to prevent retain cycles.
+
+```swift
+// ✅ DO THIS - Weak reference in async closure
+Task { [weak self] in
+    guard let self else { return }
+    await self.performOperation()
+}
+
+// ✅ DO THIS - Proper cleanup
+func cleanup() {
+    playbackTask?.cancel()
+    playbackTask = nil
+    clearPlayerObservers()
+    stopTicker()
+}
+
+// ✅ DO THIS - StateObject vs ObservedObject
+@StateObject private var coordinator = ChannelsCoordinator()  // Owns the object
+@EnvironmentObject private var plexService: PlexService      // Injected dependency
+```
+
+**Why**: Prevents memory leaks and ensures proper resource cleanup in complex async operations.
+
+### 15. Button Scaling & Clipping Prevention
 
 **The Problem**: tvOS buttons scale on focus (typically 1.5-2%), and shadows extend beyond button bounds. Both the **internal layout**, **grid spacing**, and **container padding** must accommodate the scale effect AND shadow radius to prevent clipping.
 
@@ -685,6 +896,47 @@ Container padding needed:
 
 **Applies to**: All custom buttons, cards, menus, and interactive elements in the Channel Builder and throughout the app.
 
+### 16. Complex State Management
+
+**Pattern**: Multi-layered state management with validation and error handling.
+
+```swift
+@StateObject private var viewModel: ChannelBuilderViewModel
+
+// State transitions with validation
+enum Step {
+    case libraries
+    case rules(Int)
+}
+
+// Error state management
+@State private var errorMessage: String?
+private var errorBinding: Binding<BuilderAlert?> {
+    Binding(
+        get: { viewModel.errorMessage.map { BuilderAlert(id: UUID(), message: $0) } },
+        set: { newValue in
+            if newValue == nil {
+                viewModel.errorMessage = nil
+            }
+        }
+    )
+}
+
+// Live preview updates with debouncing
+.onChange(of: viewModel.previewUpdateTrigger) { _, _ in
+    handlePreviewUpdate()
+}
+```
+
+**Key Patterns**:
+- **Step-based navigation** - Clear progression through complex workflows
+- **Validation at each step** - Prevent invalid state transitions
+- **Error state binding** - Convert internal errors to user-friendly alerts
+- **Debounced updates** - Prevent excessive API calls during rapid changes
+- **Preview state management** - Live updates without blocking UI
+
+**Why**: Complex wizards need structured state management to prevent invalid states and provide smooth user experience.
+
 ---
 
 ## Troubleshooting Guide
@@ -785,6 +1037,115 @@ VStack {
 **Root Cause**: Loading state shows text fallback immediately.
 
 **Fix**: Change `.empty` case to show `Color.clear` instead of text (see "Critical Patterns #3").
+
+### Actor Concurrency Issues
+
+**Symptoms**: Crashes or data corruption during concurrent operations, logs show "Data race detected"
+
+**Diagnosis**:
+```bash
+# Check for actor isolation violations
+Thread Sanitizer will show data race warnings
+# Look for direct access to actor properties without await
+```
+
+**Root Causes**:
+1. **Direct property access** - Accessing actor properties without `await`
+2. **Synchronous calls to actor methods** - Not using `await` for actor methods
+3. **Shared mutable state** - Non-actor classes with mutable state accessed concurrently
+
+**Fix**: 
+- Always use `await` when calling actor methods
+- Use `@MainActor` for UI updates
+- Move shared state into actors
+
+### TV Show Filtering Returns No Results
+
+**Symptoms**: TV show filters return empty results even when shows exist
+
+**Diagnosis**:
+```bash
+# Check logs for TV filtering steps
+event=tvFilter.start showFilterEmpty=false episodeFilterEmpty=false
+event=tvFilter.fetchedShows count=0  # ← Should be > 0
+event=tvFilter.matchedShows count=0  # ← Should be > 0
+```
+
+**Root Causes**:
+1. **Wrong filter separation** - Show-level filters applied to episodes
+2. **Missing show metadata** - Shows don't have expected fields (title, year, etc.)
+3. **Episode fetching failure** - `fetchShowEpisodes()` fails silently
+
+**Fix**: 
+- Verify `hasShowLevelFilters()` correctly identifies show vs episode fields
+- Check show metadata has required fields
+- Add error handling to `fetchShowEpisodes()`
+
+### Random Channel Order Changes
+
+**Symptoms**: Channel items appear in different order after app restart
+
+**Diagnosis**: Check if using `SeededRandomNumberGenerator` with consistent seed
+
+**Root Causes**:
+1. **Using system random** - `Array.shuffled()` instead of seeded generator
+2. **Inconsistent seed** - Different seed values across app launches
+3. **Non-deterministic sorting** - Unstable sort algorithm
+
+**Fix**: 
+- Use `SeededRandomNumberGenerator` with channel ID as seed
+- Ensure same seed across app launches
+- Use stable sort algorithms
+
+### Text Input Breaks Filtering
+
+**Symptoms**: Filter rules don't work with certain text inputs, especially pasted text
+
+**Diagnosis**: Check for invisible Unicode characters in filter values
+
+**Root Causes**:
+1. **Invisible Unicode characters** - Zero-width spaces, object replacement characters
+2. **Non-printable characters** - Control characters that break API calls
+3. **Encoding issues** - UTF-8 vs other encodings
+
+**Fix**: Apply text sanitization pattern (see Critical Pattern #10)
+
+### Playback Recovery Loops
+
+**Symptoms**: Playback continuously recovers and stalls, logs show repeated recovery attempts
+
+**Diagnosis**:
+```bash
+event=play.recover itemID=XXX cause=stall downshiftKbps=3000
+event=play.recover itemID=XXX cause=stall downshiftKbps=1800
+event=play.recover.exhausted itemID=XXX cause=stall
+```
+
+**Root Causes**:
+1. **Network too slow** - Even minimum bitrate too high
+2. **Recovery cooldown too short** - Rapid recovery attempts
+3. **Stale transcoder session** - Plex serving old bitrate segments
+
+**Fix**: 
+- Increase recovery cooldown period
+- Use `forceNewSession=true` on recovery
+- Check network conditions
+
+### Focus Navigation Issues
+
+**Symptoms**: Focus gets stuck or jumps unexpectedly between UI areas
+
+**Diagnosis**: Check focus section usage and focus state management
+
+**Root Causes**:
+1. **Missing focus sections** - No `.focusSection()` between UI areas
+2. **Focus state conflicts** - Multiple `@FocusState` competing
+3. **Focus restoration timing** - Restoring focus before view is ready
+
+**Fix**: 
+- Use `.focusSectionIfAvailable()` between major UI areas
+- Centralize focus state at parent level
+- Delay focus restoration with `DispatchQueue.main.async`
 
 ---
 
@@ -1070,7 +1431,20 @@ subsystem:PlexChannelsTV eventMessage:CONTAINS "404"
 - ✅ **New component**: `ChannelPreviewRow` - Non-focusable horizontal poster scrolling
 - ✅ **Critical Pattern #7** - Documented button scaling/clipping prevention in AGENTS.md
 
+**v1.1.2** (Code Review & Documentation):
+- ✅ **Actor-based concurrency** - Documented `PlexQueryBuilder` actor pattern for thread safety
+- ✅ **TV Show Two-Step Filtering** - Documented complex show → episode filtering architecture
+- ✅ **Deterministic randomization** - Documented seeded random number generation for consistent ordering
+- ✅ **Text input sanitization** - Documented Unicode character handling to prevent filter failures
+- ✅ **Advanced playback recovery** - Documented adaptive bitrate and recovery system patterns
+- ✅ **Focus section management** - Documented `.focusSectionIfAvailable()` usage patterns
+- ✅ **Secure logging patterns** - Documented URL redaction and privacy considerations
+- ✅ **Memory management guidelines** - Documented proper cleanup and weak reference patterns
+- ✅ **Complex state management** - Documented multi-layered state management with validation
+- ✅ **Enhanced troubleshooting** - Added 6 new troubleshooting sections for advanced patterns
+- ✅ **Critical Patterns 7-16** - Comprehensive documentation of all architectural patterns
+
 ---
 
-**Last Updated**: Task 31.1 (2025-10-22)  
-**Status**: Channel Builder UI refinements complete - Fixed systemic button issues, added preview row, combined steps 3 & 4
+**Last Updated**: v1.1.2 (2025-01-12)  
+**Status**: Comprehensive code review complete - All critical patterns and architectural decisions documented

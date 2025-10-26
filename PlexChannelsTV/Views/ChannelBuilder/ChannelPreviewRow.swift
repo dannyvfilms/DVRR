@@ -17,6 +17,7 @@ struct ChannelPreviewRow: View {
     @Binding var sortDescriptor: SortDescriptor
     @Binding var shuffleEnabled: Bool
     @Binding var channelName: String
+    let onRefreshLibrary: (() -> Void)?
 
     private let cardWidth: CGFloat = 180
     private let cardHeight: CGFloat = 270
@@ -27,10 +28,11 @@ struct ChannelPreviewRow: View {
 
     @FocusState private var focusedCard: FocusTarget?
 
-    private enum FocusTarget: Hashable {
+    enum FocusTarget: Hashable {
         case name
         case sortKey
         case sortOrder
+        case count
     }
 
     var body: some View {
@@ -55,7 +57,7 @@ struct ChannelPreviewRow: View {
             sortOrderControl
 
             if let countState {
-                CountBadge(state: countState, mediaType: mediaType)
+                CountBadge(state: countState, mediaType: mediaType, onRefreshLibrary: onRefreshLibrary)
             }
         }
     }
@@ -243,23 +245,53 @@ struct ChannelPreviewRow: View {
 private struct CountBadge: View {
     let state: ChannelBuilderViewModel.CountState
     let mediaType: PlexMediaType
+    let onRefreshLibrary: (() -> Void)?
+    
+    @State private var showMenu = false
+    @FocusState private var isFocused: Bool
 
     var body: some View {
-        HStack(spacing: 8) {
-            if state.isLoading {
-                ProgressView()
-                    .progressViewStyle(.circular)
-                    .scaleEffect(0.8)
+        Button {
+            // Primary action - no-op for count badge
+        } label: {
+            HStack(spacing: 8) {
+                if state.isLoading {
+                    ProgressView()
+                        .progressViewStyle(.circular)
+                        .scaleEffect(0.8)
+                }
+                Text(countLabel)
+                    .font(.footnote.bold())
             }
-            Text(countLabel)
-                .font(.footnote.bold())
+            .padding(.vertical, PreviewBadgeStyle.verticalPadding)
+            .padding(.horizontal, PreviewBadgeStyle.horizontalPadding)
+            .background(
+                Capsule()
+                    .fill(PreviewBadgeStyle.background)
+            )
         }
-        .padding(.vertical, PreviewBadgeStyle.verticalPadding)
-        .padding(.horizontal, PreviewBadgeStyle.horizontalPadding)
-        .background(
-            Capsule()
-                .fill(PreviewBadgeStyle.background)
+        .clipShape(Capsule())
+        .buttonStyle(.plain)
+        .scaleEffect(isFocused ? 1.015 : 1.0)
+        .shadow(
+            color: isFocused ? .accentColor.opacity(0.35) : .clear,
+            radius: 8,
+            x: 0,
+            y: 2
         )
+        .onPlayPauseCommand {
+            showMenu = true
+        }
+        .focused($isFocused)
+        .confirmationDialog(menuTitle, isPresented: $showMenu, titleVisibility: .visible) {
+            if let onRefreshLibrary {
+                Button("Refresh Library") {
+                    onRefreshLibrary()
+                }
+            }
+            
+            Button("Cancel", role: .cancel) {}
+        }
     }
 
     private var countLabel: String {
@@ -274,6 +306,20 @@ private struct CountBadge: View {
             return "Counting…"
         }
         return "—"
+    }
+    
+    private var menuTitle: String {
+        if let lastUpdated = state.lastUpdated {
+            return "Last Updated: \(formatDate(lastUpdated))"
+        }
+        return "Library Cache"
+    }
+    
+    private func formatDate(_ date: Date) -> String {
+        let formatter = DateFormatter()
+        formatter.dateStyle = .short
+        formatter.timeStyle = .short
+        return formatter.string(from: date)
     }
 }
 

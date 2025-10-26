@@ -11,6 +11,7 @@ import PlexKit
 struct LibraryMultiPickerView: View {
     let libraries: [PlexLibrary]
     let selectedIDs: Set<String>
+    let cacheStore: LibraryMediaCacheStore
     var onToggle: (PlexLibrary) -> Void
 
     private var columns: [GridItem] {
@@ -21,7 +22,7 @@ struct LibraryMultiPickerView: View {
         ScrollView {
             LazyVGrid(columns: columns, spacing: 48) {
                 ForEach(libraries, id: \.uuid) { library in
-                    LibraryCard(library: library, isSelected: selectedIDs.contains(library.uuid)) {
+                    LibraryCard(library: library, isSelected: selectedIDs.contains(library.uuid), cacheStore: cacheStore) {
                         onToggle(library)
                     }
                 }
@@ -35,9 +36,11 @@ struct LibraryMultiPickerView: View {
 private struct LibraryCard: View {
     let library: PlexLibrary
     let isSelected: Bool
+    let cacheStore: LibraryMediaCacheStore
     var action: () -> Void
 
     @FocusState private var isFocused: Bool
+    @State private var cachedCount: Int? = nil
 
     var body: some View {
         Button(action: {
@@ -65,7 +68,7 @@ private struct LibraryCard: View {
                         
                         Spacer(minLength: 0).frame(height: 4)
                         
-                        Text(library.type.displayName)
+                        Text(subtitleText)
                             .font(.system(size: 24, weight: .medium))
                             .foregroundStyle(.secondary)
                             .lineLimit(1)
@@ -97,6 +100,34 @@ private struct LibraryCard: View {
         .scaleEffect(isFocused ? 1.015 : 1.0)
         .animation(.easeInOut(duration: 0.15), value: isFocused)
         .shadow(color: isFocused ? Color.accentColor.opacity(0.3) : .clear, radius: 12, x: 0, y: 4)
+        .onAppear {
+            loadCachedCount()
+        }
+    }
+    
+    private var subtitleText: String {
+        if let count = cachedCount {
+            if library.type == .show {
+                return "\(count) Episodes"
+            } else {
+                return "\(count) \(library.type.displayName)"
+            }
+        } else {
+            return library.type.displayName
+        }
+    }
+    
+    private func loadCachedCount() {
+        Task {
+            let key = LibraryMediaCacheStore.CacheKey(
+                libraryID: library.uuid,
+                mediaType: library.type == .show ? .episode : library.type
+            )
+            let count = await cacheStore.itemCount(for: key)
+            await MainActor.run {
+                cachedCount = count
+            }
+        }
     }
 
     private var background: some View {

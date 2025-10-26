@@ -107,7 +107,10 @@ struct ChannelBuilderFlowView: View {
                     mediaType: library.type,
                     sortDescriptor: sortBinding,
                     shuffleEnabled: shuffleBinding,
-                    channelName: $viewModel.draft.name
+                    channelName: $viewModel.draft.name,
+                    onRefreshLibrary: {
+                        viewModel.refreshLibraryCache(for: ref.id)
+                    }
                 )
             }
         }
@@ -179,6 +182,7 @@ struct ChannelBuilderFlowView: View {
                 LibraryMultiPickerView(
                     libraries: viewModel.allLibraries,
                     selectedIDs: selectedIDs,
+                    cacheStore: viewModel.cacheStore,
                     onToggle: viewModel.toggleLibrary
                 )
                 .onChange(of: viewModel.selectedLibraryRefs.count) { oldCount, newCount in

@@ -389,7 +389,7 @@ extension Channel.Media {
                 audienceRating: item.userRating
             ),
             artwork: Channel.Media.Artwork(
-                thumb: item.parentThumb,  // Use season poster instead of episode poster
+                thumb: item.type == .episode ? item.parentThumb : item.thumb,  // Use season poster for TV episodes, movie poster for movies
                 art: item.art,
                 parentThumb: item.parentThumb,
                 grandparentThumb: item.grandparentThumb,

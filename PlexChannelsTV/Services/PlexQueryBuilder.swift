@@ -15,12 +15,20 @@ actor PlexQueryBuilder {
     }
 
     private let plexService: PlexService
-    private var mediaCache: [String: [PlexMediaItem]] = [:]
+    private let cacheStore: LibraryMediaCacheStore
+    private var mediaCache: [String: LibraryMediaCacheStore.Entry] = [:]
     private var progressCallback: ((String, Int) -> Void)?
     private var activeFetches: Set<String> = []
+    private var lastRefreshAttempt: [String: Date] = [:]
 
-    init(plexService: PlexService) {
+    private let movieRefreshInterval: TimeInterval = 60 * 60  // 1 hour
+
+    init(
+        plexService: PlexService,
+        cacheStore: LibraryMediaCacheStore = .shared
+    ) {
         self.plexService = plexService
+        self.cacheStore = cacheStore
     }
     
     func setProgressCallback(_ callback: @escaping (String, Int) -> Void) {
@@ -30,101 +38,114 @@ actor PlexQueryBuilder {
     private func preferredMediaType(for library: PlexLibrary) -> PlexMediaType {
         switch library.type {
         case .show:
-            return .episode
+            return .show  // For TV libraries, fetch shows first, then episodes
         default:
             return library.type
         }
     }
 
     func invalidateCache(for libraryID: String) {
-        mediaCache.removeValue(forKey: libraryID)
+        // Remove all cache entries for this library (both shows and episodes)
+        let keysToRemove = mediaCache.keys.filter { $0.hasPrefix(libraryID) }
+        for key in keysToRemove {
+            let removed = mediaCache.removeValue(forKey: key)
+            lastRefreshAttempt.removeValue(forKey: key)
+            if let entry = removed {
+                if entry.key.mediaType == .movie {
+                    Task {
+                        await cacheStore.removeEntry(for: entry.key)
+                    }
+                }
+            }
+        }
     }
     
     func invalidateAllCache() {
         mediaCache.removeAll()
+        lastRefreshAttempt.removeAll()
     }
     
     func updateProgress(for libraryID: String, count: Int) {
         progressCallback?(libraryID, count)
     }
 
-    func mediaSnapshot(for library: PlexLibrary, limit: Int? = nil) async throws -> [PlexMediaItem] {
-        let cacheKey = library.uuid
-        let targetType = preferredMediaType(for: library)
+    func mediaSnapshot(for library: PlexLibrary, limit: Int? = nil, mediaType: PlexMediaType? = nil) async throws -> [PlexMediaItem] {
+        let targetType = mediaType ?? preferredMediaType(for: library)
+        let cacheKey = makeCacheKey(for: library, mediaType: targetType)
+        let storeKey = makeStoreKey(for: library, mediaType: targetType)
+        let useMemoryCache = limit == nil
+        let useDiskCache = useMemoryCache && (targetType == .movie || targetType == .episode)
+        let effectiveLimit = limit
 
-        // Use cache if available, regardless of limit
-        // This prevents multiple fetches of the same library
-        if let cached = mediaCache[cacheKey] {
-            AppLoggers.channel.info("event=queryBuilder.snapshot.cache libraryType=\(library.type.rawValue) libraryID=\(library.uuid, privacy: .public) itemCount=\(cached.count) limit=\(limit ?? -1)")
-            return cached
-        }
-        
-        // Check if we're already fetching this library
-        if activeFetches.contains(cacheKey) {
-            AppLoggers.channel.info("event=queryBuilder.snapshot.waiting libraryType=\(library.type.rawValue) libraryID=\(library.uuid, privacy: .public) reason=concurrentFetch")
-            // Wait for the active fetch to complete
-            while activeFetches.contains(cacheKey) {
-                try await Task.sleep(nanoseconds: 100_000_000) // 100ms
-            }
-            // Return cached result if available
-            if let cached = mediaCache[cacheKey] {
-                AppLoggers.channel.info("event=queryBuilder.snapshot.cachedAfterWait libraryType=\(library.type.rawValue) libraryID=\(library.uuid, privacy: .public) itemCount=\(cached.count)")
-                return cached
-            }
-        }
-
-        // Apply different default limits based on library type
-        // For movies: allow up to 10,000 items (no practical limit)
-        // For TV episodes: use 800 to avoid overwhelming the system
-        let effectiveLimit: Int? = {
-            if let customLimit = limit {
-                return customLimit
-            }
-            // Don't apply a limit by default - fetch everything
-            return nil
-        }()
-
-        AppLoggers.channel.info("event=queryBuilder.snapshot.fetch libraryType=\(library.type.rawValue) libraryID=\(library.uuid, privacy: .public) limit=\(effectiveLimit ?? -1)")
-
-        // Mark this fetch as active
-        activeFetches.insert(cacheKey)
-        
-        let items: [PlexMediaItem]
-        do {
-            items = try await plexService.fetchLibraryItems(
-                for: library,
-                mediaType: targetType,
-                limit: effectiveLimit,
-                onProgress: { [weak self] count in
-                    Task {
-                        await self?.updateProgress(for: library.uuid, count: count)
-                    }
-                }
+        if useMemoryCache, let cachedEntry = mediaCache[cacheKey] {
+            AppLoggers.channel.info("event=queryBuilder.snapshot.cache source=memory libraryType=\(library.type.rawValue) libraryID=\(library.uuid, privacy: .public) itemCount=\(cachedEntry.itemCount) limit=\(effectiveLimit ?? -1)")
+            scheduleBackgroundRefreshIfNeeded(
+                for: cachedEntry,
+                library: library,
+                targetType: targetType,
+                cacheKey: cacheKey
             )
-        } catch {
-            // Remove from active fetches on error
-            activeFetches.remove(cacheKey)
-            throw error
+            return applyLimitIfNeeded(cachedEntry.items, limit: effectiveLimit)
         }
-        
-        // Remove from active fetches on success
-        activeFetches.remove(cacheKey)
 
-        AppLoggers.channel.info("event=queryBuilder.snapshot.fetched libraryType=\(library.type.rawValue) libraryID=\(library.uuid, privacy: .public) itemCount=\(items.count) limit=\(effectiveLimit ?? -1)")
+        if useDiskCache, let persistedEntry = await cacheStore.entry(for: storeKey) {
+            mediaCache[cacheKey] = persistedEntry
+            AppLoggers.channel.info("event=queryBuilder.snapshot.cache source=disk libraryType=\(library.type.rawValue) libraryID=\(library.uuid, privacy: .public) itemCount=\(persistedEntry.itemCount) limit=\(effectiveLimit ?? -1)")
+            scheduleBackgroundRefreshIfNeeded(
+                for: persistedEntry,
+                library: library,
+                targetType: targetType,
+                cacheKey: cacheKey
+            )
+            return applyLimitIfNeeded(persistedEntry.items, limit: effectiveLimit)
+        }
 
-        // Cache the results for future use
-        // This prevents multiple fetches of the same library
-        mediaCache[cacheKey] = items
+        let entry = try await fetchSnapshotFromNetwork(
+            library: library,
+            targetType: targetType,
+            effectiveLimit: effectiveLimit,
+            cacheKey: cacheKey,
+            storeKey: storeKey,
+            useMemoryCache: useMemoryCache,
+            useDiskCache: useDiskCache
+        )
 
-        return items
+        return applyLimitIfNeeded(entry.items, limit: effectiveLimit)
     }
 
     func count(
         library: PlexLibrary,
         using group: FilterGroup
     ) async throws -> Int {
-        // For TV libraries with show-level filters, use two-step process
-        if library.type == .show && hasShowLevelFilters(group) {
+        // For TV libraries, check if we have cached episodes first
+        if library.type == .show {
+            let episodeCacheKey = makeCacheKey(for: library, mediaType: .episode)
+            let episodeStoreKey = makeStoreKey(for: library, mediaType: .episode)
+            
+            // Check if we have cached episodes
+            if let cachedEpisodes = mediaCache[episodeCacheKey] {
+                AppLoggers.channel.info("event=queryBuilder.count.cachedEpisodes libraryID=\(library.uuid, privacy: .public) itemCount=\(cachedEpisodes.itemCount)")
+                guard !group.isEmpty else { return cachedEpisodes.itemCount }
+                return cachedEpisodes.items.reduce(into: 0) { partial, item in
+                    if matches(item, group: group) {
+                        partial += 1
+                    }
+                }
+            }
+            
+            // Check disk cache for episodes
+            if let diskEpisodes = await cacheStore.entry(for: episodeStoreKey) {
+                mediaCache[episodeCacheKey] = diskEpisodes
+                AppLoggers.channel.info("event=queryBuilder.count.diskEpisodes libraryID=\(library.uuid, privacy: .public) itemCount=\(diskEpisodes.itemCount)")
+                guard !group.isEmpty else { return diskEpisodes.itemCount }
+                return diskEpisodes.items.reduce(into: 0) { partial, item in
+                    if matches(item, group: group) {
+                        partial += 1
+                    }
+                }
+            }
+            
+            // No cached episodes, use two-step process to get episode counts
             let media = try await buildChannelMediaForTVShows(
                 library: library,
                 using: group,
@@ -134,8 +155,7 @@ actor PlexQueryBuilder {
             return media.count
         }
         
-        // For movies, TV shows without show-level filters, or episode-only filtering, use standard approach
-        // Use cached data for filtering
+        // For movies, use standard approach with cached data
         let items = try await mediaSnapshot(for: library, limit: nil)
         AppLoggers.channel.info("event=queryBuilder.count.snapshot libraryType=\(library.type.rawValue) libraryID=\(library.uuid, privacy: .public) itemCount=\(items.count)")
         guard !group.isEmpty else { return items.count }
@@ -161,8 +181,16 @@ actor PlexQueryBuilder {
         }
         
         // For movies, TV shows without show-level filters, or episode-only filtering, use standard approach
+        // For TV libraries without show-level filters, we need episodes, not shows
+        let targetType: PlexMediaType = {
+            if library.type == .show && !hasShowLevelFilters(group) {
+                return .episode  // For TV without show-level filters, get episodes directly
+            }
+            return preferredMediaType(for: library)  // Use the standard logic
+        }()
+        
         // Use cached data for filtering
-        var items = try await mediaSnapshot(for: library, limit: nil)
+        var items = try await mediaSnapshot(for: library, limit: nil, mediaType: targetType)
         if !group.isEmpty {
             items = items.filter { matches($0, group: group) }
         }
@@ -196,9 +224,80 @@ actor PlexQueryBuilder {
         sort descriptor: SortDescriptor?,
         limit: Int? = nil
     ) async throws -> [Channel.Media] {
-        // For TV libraries, check if we're filtering by show-level fields
-        // If so, we need to find shows first, then expand to their episodes
-        if library.type == .show && hasShowLevelFilters(group) {
+        // For TV libraries, check if we have cached episodes first
+        if library.type == .show {
+            let episodeCacheKey = makeCacheKey(for: library, mediaType: .episode)
+            let episodeStoreKey = makeStoreKey(for: library, mediaType: .episode)
+            
+            // Check if we have cached episodes in memory
+            if let cachedEpisodes = mediaCache[episodeCacheKey] {
+                AppLoggers.channel.info("event=buildChannelMedia.cachedEpisodes libraryID=\(library.uuid, privacy: .public) itemCount=\(cachedEpisodes.itemCount)")
+                
+                // Force background refresh to find additional episodes
+                forceBackgroundRefresh(
+                    for: cachedEpisodes,
+                    library: library,
+                    targetType: .episode,
+                    cacheKey: episodeCacheKey
+                )
+                
+                // Apply filters to cached episodes
+                var filteredEpisodes = cachedEpisodes.items
+                if !group.isEmpty {
+                    filteredEpisodes = filteredEpisodes.filter { matches($0, group: group) }
+                }
+                
+                // Apply sorting
+                if let descriptor {
+                    filteredEpisodes = sort(filteredEpisodes, using: descriptor)
+                }
+                
+                // Apply limit
+                if let limit, limit < filteredEpisodes.count {
+                    filteredEpisodes = Array(filteredEpisodes.prefix(limit))
+                }
+                
+                let mediaItems = filteredEpisodes.compactMap(Channel.Media.from)
+                AppLoggers.channel.info("event=buildChannelMedia.cachedResult count=\(mediaItems.count)")
+                return mediaItems
+            }
+            
+            // Check disk cache for episodes
+            if let diskEpisodes = await cacheStore.entry(for: episodeStoreKey) {
+                mediaCache[episodeCacheKey] = diskEpisodes
+                AppLoggers.channel.info("event=buildChannelMedia.diskEpisodes libraryID=\(library.uuid, privacy: .public) itemCount=\(diskEpisodes.itemCount)")
+                
+                // Force background refresh to find additional episodes
+                forceBackgroundRefresh(
+                    for: diskEpisodes,
+                    library: library,
+                    targetType: .episode,
+                    cacheKey: episodeCacheKey
+                )
+                
+                // Apply filters to cached episodes
+                var filteredEpisodes = diskEpisodes.items
+                if !group.isEmpty {
+                    filteredEpisodes = filteredEpisodes.filter { matches($0, group: group) }
+                }
+                
+                // Apply sorting
+                if let descriptor {
+                    filteredEpisodes = sort(filteredEpisodes, using: descriptor)
+                }
+                
+                // Apply limit
+                if let limit, limit < filteredEpisodes.count {
+                    filteredEpisodes = Array(filteredEpisodes.prefix(limit))
+                }
+                
+                let mediaItems = filteredEpisodes.compactMap(Channel.Media.from)
+                AppLoggers.channel.info("event=buildChannelMedia.diskResult count=\(mediaItems.count)")
+                return mediaItems
+            }
+            
+            // No cached episodes, use two-step approach to cache episodes
+            AppLoggers.channel.info("event=buildChannelMedia.noCache libraryID=\(library.uuid, privacy: .public) proceeding with full fetch")
             return try await buildChannelMediaForTVShows(
                 library: library,
                 using: group,
@@ -215,6 +314,211 @@ actor PlexQueryBuilder {
             limit: limit
         )
         return mediaItems.compactMap(Channel.Media.from)
+    }
+    
+    /// Force refresh the library cache for a specific library
+    func forceRefreshLibraryCache(for library: PlexLibrary) async {
+        let targetType = library.type == .show ? PlexMediaType.episode : library.type
+        let cacheKey = makeCacheKey(for: library, mediaType: targetType)
+        let storeKey = makeStoreKey(for: library, mediaType: targetType)
+        
+        AppLoggers.cache.info("event=libraryCache.refresh.force libraryID=\(library.uuid, privacy: .public) mediaType=\(targetType.rawValue, privacy: .public)")
+        
+        do {
+            let refreshed = try await fetchSnapshotFromNetwork(
+                library: library,
+                targetType: targetType,
+                effectiveLimit: nil,
+                cacheKey: cacheKey,
+                storeKey: storeKey,
+                useMemoryCache: true,
+                useDiskCache: true
+            )
+            AppLoggers.cache.info("event=libraryCache.refresh.forceComplete libraryID=\(library.uuid, privacy: .public) itemCount=\(refreshed.itemCount)")
+        } catch {
+            AppLoggers.cache.error("event=libraryCache.refresh.forceFailed libraryID=\(library.uuid, privacy: .public) error=\(String(describing: error), privacy: .public)")
+        }
+    }
+}
+
+private extension PlexQueryBuilder {
+    func makeCacheKey(for library: PlexLibrary, mediaType: PlexMediaType) -> String {
+        "\(library.uuid)_\(mediaType.rawValue)"
+    }
+
+    func makeStoreKey(for library: PlexLibrary, mediaType: PlexMediaType) -> LibraryMediaCacheStore.CacheKey {
+        LibraryMediaCacheStore.CacheKey(libraryID: library.uuid, mediaType: mediaType)
+    }
+
+    func fetchSnapshotFromNetwork(
+        library: PlexLibrary,
+        targetType: PlexMediaType,
+        effectiveLimit: Int?,
+        cacheKey: String,
+        storeKey: LibraryMediaCacheStore.CacheKey,
+        useMemoryCache: Bool,
+        useDiskCache: Bool
+    ) async throws -> LibraryMediaCacheStore.Entry {
+        let fetchKey: String
+        if useMemoryCache {
+            fetchKey = cacheKey
+        } else {
+            fetchKey = "\(cacheKey)#limit:\(effectiveLimit ?? -1)"
+        }
+
+        if activeFetches.contains(fetchKey) {
+            AppLoggers.channel.info("event=queryBuilder.snapshot.waiting libraryType=\(library.type.rawValue) libraryID=\(library.uuid, privacy: .public) reason=concurrentFetch")
+            while activeFetches.contains(fetchKey) {
+                try await Task.sleep(nanoseconds: 100_000_000)
+            }
+
+            if useMemoryCache, let cachedEntry = mediaCache[cacheKey] {
+                AppLoggers.channel.info("event=queryBuilder.snapshot.cachedAfterWait libraryType=\(library.type.rawValue) libraryID=\(library.uuid, privacy: .public) itemCount=\(cachedEntry.itemCount)")
+                return cachedEntry
+            }
+        }
+
+        activeFetches.insert(fetchKey)
+
+        AppLoggers.channel.info("event=queryBuilder.snapshot.fetch libraryType=\(library.type.rawValue) libraryID=\(library.uuid, privacy: .public) limit=\(effectiveLimit ?? -1)")
+
+        let items: [PlexMediaItem]
+        do {
+            items = try await plexService.fetchLibraryItems(
+                for: library,
+                mediaType: targetType,
+                limit: effectiveLimit,
+                onProgress: { [weak self] count in
+                    Task {
+                        await self?.updateProgress(for: library.uuid, count: count)
+                    }
+                }
+            )
+        } catch {
+            activeFetches.remove(fetchKey)
+            AppLoggers.channel.error("event=queryBuilder.snapshot.fetchFailed libraryType=\(library.type.rawValue) libraryID=\(library.uuid, privacy: .public) error=\(String(describing: error), privacy: .public)")
+            throw error
+        }
+
+        activeFetches.remove(fetchKey)
+
+        AppLoggers.channel.info("event=queryBuilder.snapshot.fetched libraryType=\(library.type.rawValue) libraryID=\(library.uuid, privacy: .public) itemCount=\(items.count) limit=\(effectiveLimit ?? -1)")
+
+        if useDiskCache {
+            let entry = await cacheStore.updateIncrementally(newItems: items, for: storeKey)
+            mediaCache[cacheKey] = entry
+            lastRefreshAttempt[cacheKey] = Date()
+            return entry
+        }
+
+        let entry = LibraryMediaCacheStore.Entry(
+            schemaVersion: LibraryMediaCacheStore.Entry.currentSchemaVersion,
+            fetchedAt: Date(),
+            itemCount: items.count,
+            key: storeKey,
+            items: items
+        )
+
+        if useMemoryCache {
+            mediaCache[cacheKey] = entry
+        }
+
+        return entry
+    }
+
+    func scheduleBackgroundRefreshIfNeeded(
+        for entry: LibraryMediaCacheStore.Entry,
+        library: PlexLibrary,
+        targetType: PlexMediaType,
+        cacheKey: String
+    ) {
+        guard targetType == .movie || targetType == .episode else { return }
+        guard !activeFetches.contains(cacheKey) else { return }
+
+        let refreshInterval = movieRefreshInterval
+        let age = Date().timeIntervalSince(entry.fetchedAt)
+        guard age >= refreshInterval else { return }
+
+        if let lastAttempt = lastRefreshAttempt[cacheKey],
+           Date().timeIntervalSince(lastAttempt) < refreshInterval {
+            return
+        }
+
+        lastRefreshAttempt[cacheKey] = Date()
+
+        AppLoggers.cache.info("event=libraryCache.refresh.schedule libraryID=\(entry.key.libraryID, privacy: .public) ageSeconds=\(Int(age)) threshold=\(Int(refreshInterval))")
+
+        Task {
+            do {
+                let refreshed = try await self.fetchSnapshotFromNetwork(
+                    library: library,
+                    targetType: targetType,
+                    effectiveLimit: nil,
+                    cacheKey: cacheKey,
+                    storeKey: entry.key,
+                    useMemoryCache: true,
+                    useDiskCache: true
+                )
+                AppLoggers.cache.info("event=libraryCache.refresh.complete libraryID=\(refreshed.key.libraryID, privacy: .public) count=\(refreshed.itemCount)")
+            } catch {
+                AppLoggers.cache.error("event=libraryCache.refresh.failed libraryID=\(entry.key.libraryID, privacy: .public) error=\(String(describing: error), privacy: .public)")
+            }
+        }
+    }
+    
+    /// Force a background refresh regardless of time intervals
+    /// Used when channel builder reaches stable state and we want to find additional content
+    func forceBackgroundRefresh(
+        for entry: LibraryMediaCacheStore.Entry,
+        library: PlexLibrary,
+        targetType: PlexMediaType,
+        cacheKey: String
+    ) {
+        guard targetType == .movie || targetType == .episode else { return }
+        guard !activeFetches.contains(cacheKey) else { return }
+
+        // Skip if cache is less than 1 hour old (3600 seconds)
+        let cacheAge = Date().timeIntervalSince(entry.fetchedAt)
+        if cacheAge < 3600 {
+            AppLoggers.cache.info("event=libraryCache.refresh.skip libraryID=\(entry.key.libraryID, privacy: .public) reason=cacheTooNew ageSeconds=\(Int(cacheAge))")
+            return
+        }
+
+        // Skip if we've attempted a refresh recently (within 30 seconds)
+        if let lastAttempt = lastRefreshAttempt[cacheKey],
+           Date().timeIntervalSince(lastAttempt) < 30 {
+            AppLoggers.cache.info("event=libraryCache.refresh.skip libraryID=\(entry.key.libraryID, privacy: .public) reason=recentAttempt")
+            return
+        }
+
+        lastRefreshAttempt[cacheKey] = Date()
+
+        AppLoggers.cache.info("event=libraryCache.refresh.force libraryID=\(entry.key.libraryID, privacy: .public) mediaType=\(targetType.rawValue, privacy: .public) currentCount=\(entry.itemCount)")
+
+        Task {
+            do {
+                let refreshed = try await self.fetchSnapshotFromNetwork(
+                    library: library,
+                    targetType: targetType,
+                    effectiveLimit: nil,
+                    cacheKey: cacheKey,
+                    storeKey: entry.key,
+                    useMemoryCache: true,
+                    useDiskCache: true
+                )
+                AppLoggers.cache.info("event=libraryCache.refresh.forceComplete libraryID=\(entry.key.libraryID, privacy: .public) itemCount=\(refreshed.itemCount) added=\(refreshed.itemCount - entry.itemCount)")
+            } catch {
+                AppLoggers.cache.error("event=libraryCache.refresh.forceFailed libraryID=\(entry.key.libraryID, privacy: .public) error=\(String(describing: error), privacy: .public)")
+            }
+        }
+    }
+
+    func applyLimitIfNeeded(_ items: [PlexMediaItem], limit: Int?) -> [PlexMediaItem] {
+        guard let limit, limit > 0 else { return items }
+        if items.count <= limit {
+            return items
+        }
+        return Array(items.prefix(limit))
     }
 }
 
@@ -301,12 +605,22 @@ private extension PlexQueryBuilder {
             AppLoggers.channel.info("event=tvFilter.debug matchedShow index=\(index) title=\(show.title ?? "unknown") key=\(show.ratingKey)")
         }
         
-        // Step 3: Fetch episodes directly from each matching show
+        // Step 3: Sort shows by newest first to prioritize recent content
+        let sortedShows = matchingShows.sorted { show1, show2 in
+            let date1 = show1.addedAt ?? .distantPast
+            let date2 = show2.addedAt ?? .distantPast
+            return date1 > date2  // Newest first
+        }
+        
+        AppLoggers.channel.info("event=tvFilter.sortedShows count=\(sortedShows.count) newestFirst=true")
+        
+        // Step 4: Fetch episodes directly from each matching show
         // We need to fetch episodes for each show individually since the library cache
         // doesn't contain all episodes from all shows
         var allEpisodes: [PlexMediaItem] = []
+        var savedEpisodesCount = 0
         
-        for (index, show) in matchingShows.enumerated() {
+        for (index, show) in sortedShows.enumerated() {
             do {
                 AppLoggers.channel.info("event=tvFilter.debug processingShow index=\(index) showTitle=\(show.title ?? "unknown") showKey=\(show.ratingKey) showKeyField=\(show.key)")
                 AppLoggers.channel.info("event=tvFilter.debug loopStart index=\(index) showTitle=\(show.title ?? "unknown") showKey=\(show.ratingKey) showKeyField=\(show.key)")
@@ -341,10 +655,25 @@ private extension PlexQueryBuilder {
                 }
                 
                 allEpisodes.append(contentsOf: showEpisodes)
+                
+                // Incremental save: Save episodes after each show to avoid losing progress
+                if !showEpisodes.isEmpty {
+                    let episodeCacheKey = LibraryMediaCacheStore.CacheKey(
+                        libraryID: library.uuid,
+                        mediaType: .episode
+                    )
+                    // Use regular store to replace cache with cumulative episodes
+                    await cacheStore.store(items: allEpisodes, for: episodeCacheKey)
+                    savedEpisodesCount = allEpisodes.count
+                    AppLoggers.cache.info("event=libraryCache.store libraryID=\(library.uuid, privacy: .public) mediaType=episode count=\(savedEpisodesCount) show=\(show.title ?? "unknown", privacy: .public)")
+                }
             } catch {
                 AppLoggers.channel.error("event=tvFilter.debug showEpisodesError show=\(show.title ?? "unknown") error=\(error)")
             }
         }
+        
+        // Final summary: Episodes were saved incrementally during the loop
+        AppLoggers.cache.info("event=libraryCache.store.complete libraryID=\(library.uuid, privacy: .public) mediaType=episode totalCount=\(allEpisodes.count) showsProcessed=\(sortedShows.count)")
         
         AppLoggers.channel.info("event=tvFilter.fetchedEpisodes count=\(allEpisodes.count)")
         
