@@ -16,6 +16,7 @@ enum FilterValue: Hashable {
     case enumCase(String)
     case enumSet([String])
     case relativeDate(RelativeDatePreset)
+    case relativeDateSpec(RelativeDateSpec)
 
     var isEmpty: Bool {
         switch self {
@@ -46,6 +47,8 @@ enum FilterValue: Hashable {
             return "[\(values.map { "\"\($0)\"" }.joined(separator: ", "))]"
         case .relativeDate(let preset):
             return "\"\(preset.displayName)\""
+        case .relativeDateSpec(let spec):
+            return "\"\(spec.displayName)\""
         }
     }
 }
@@ -64,6 +67,7 @@ extension FilterValue: Codable {
         case enumCase
         case enumSet
         case relativeDate
+        case relativeDateSpec
     }
 
     init(from decoder: Decoder) throws {
@@ -91,6 +95,9 @@ extension FilterValue: Codable {
         case .relativeDate:
             let value = try container.decode(RelativeDatePreset.self, forKey: .value)
             self = .relativeDate(value)
+        case .relativeDateSpec:
+            let value = try container.decode(RelativeDateSpec.self, forKey: .value)
+            self = .relativeDateSpec(value)
         }
     }
 
@@ -118,7 +125,86 @@ extension FilterValue: Codable {
         case .relativeDate(let value):
             try container.encode(Kind.relativeDate, forKey: .kind)
             try container.encode(value, forKey: .value)
+        case .relativeDateSpec(let value):
+            try container.encode(Kind.relativeDateSpec, forKey: .kind)
+            try container.encode(value, forKey: .value)
         }
+    }
+}
+
+/// Time units for relative date operations
+enum TimeUnit: String, CaseIterable, Codable, Hashable, Identifiable {
+    case seconds
+    case minutes
+    case hours
+    case days
+    case weeks
+    case months
+    case years
+
+    var id: String { rawValue }
+
+    var displayName: String {
+        switch self {
+        case .seconds: return "Seconds"
+        case .minutes: return "Minutes"
+        case .hours: return "Hours"
+        case .days: return "Days"
+        case .weeks: return "Weeks"
+        case .months: return "Months"
+        case .years: return "Years"
+        }
+    }
+
+    var singularDisplayName: String {
+        switch self {
+        case .seconds: return "Second"
+        case .minutes: return "Minute"
+        case .hours: return "Hour"
+        case .days: return "Day"
+        case .weeks: return "Week"
+        case .months: return "Month"
+        case .years: return "Year"
+        }
+    }
+
+    /// Convert a value in this unit to seconds
+    func toSeconds(_ value: Int) -> TimeInterval {
+        switch self {
+        case .seconds: return TimeInterval(value)
+        case .minutes: return TimeInterval(value * 60)
+        case .hours: return TimeInterval(value * 3600)
+        case .days: return TimeInterval(value * 86400)
+        case .weeks: return TimeInterval(value * 604800)
+        case .months: return TimeInterval(value * 2629746) // ~30.44 days
+        case .years: return TimeInterval(value * 31556952) // ~365.25 days
+        }
+    }
+}
+
+/// Flexible relative date specification with custom time units
+struct RelativeDateSpec: Codable, Hashable, Identifiable {
+    let id: UUID
+    let value: Int
+    let unit: TimeUnit
+
+    init(id: UUID = UUID(), value: Int, unit: TimeUnit) {
+        self.id = id
+        self.value = value
+        self.unit = unit
+    }
+
+    var displayName: String {
+        if value == 1 {
+            return "1 \(unit.singularDisplayName)"
+        } else {
+            return "\(value) \(unit.displayName)"
+        }
+    }
+
+    /// Calculate the date that is this duration ago from now
+    var dateAgo: Date {
+        Date().addingTimeInterval(-unit.toSeconds(value))
     }
 }
 

@@ -409,9 +409,30 @@ private struct FilterRuleEditor: View {
                         .fill(Color.white.opacity(0.12))
                 )
         case .boolean:
-            Toggle("True", isOn: bindingForBool())
-                .toggleStyle(.switch)
-                .frame(width: 180)
+            Button {
+                bindingForBool().wrappedValue.toggle()
+            } label: {
+                HStack {
+                    Spacer()
+                    Text(bindingForBool().wrappedValue ? "True" : "False")
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.9)
+                    Spacer()
+                }
+                .frame(width: 260)
+                .padding(.horizontal, 16)
+                .padding(.vertical, 12)
+            }
+            .buttonStyle(.plain)
+            .background(
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .fill(Color.white.opacity(focusedField == .valuePicker ? 0.18 : 0.12))
+            )
+            .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+            .focused($focusedField, equals: .valuePicker)
+            .scaleEffect(focusedField == .valuePicker ? 1.015 : 1.0)
+            .shadow(color: focusedField == .valuePicker ? .accentColor.opacity(0.3) : .clear, radius: 6, x: 0, y: 2)
+            .animation(.easeInOut(duration: 0.15), value: focusedField == .valuePicker)
         case .date:
             DateValuePicker(
                 selection: bindingForDate(),

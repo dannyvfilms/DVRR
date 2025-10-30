@@ -23,6 +23,8 @@ enum FilterOperator: String, CaseIterable, Codable, Hashable, Identifiable {
     case before
     case on
     case after
+    case inTheLast
+    case notInTheLast
 
     var id: String {
         rawValue
@@ -44,13 +46,15 @@ enum FilterOperator: String, CaseIterable, Codable, Hashable, Identifiable {
         case .before:             return "Before"
         case .on:                 return "On"
         case .after:              return "After"
+        case .inTheLast:          return "In the Last"
+        case .notInTheLast:       return "Not in the Last"
         }
     }
 
     /// Whether the operator represents a negated comparison.
     var isNegated: Bool {
         switch self {
-        case .notContains, .notEquals:
+        case .notContains, .notEquals, .notInTheLast:
             return true
         default:
             return false
@@ -70,7 +74,7 @@ enum FilterOperator: String, CaseIterable, Codable, Hashable, Identifiable {
     /// Convenience to determine if the operator involves an ordered date comparison.
     var isDateComparable: Bool {
         switch self {
-        case .before, .on, .after:
+        case .before, .on, .after, .inTheLast, .notInTheLast:
             return true
         default:
             return false

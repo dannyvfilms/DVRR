@@ -39,6 +39,7 @@ actor PlexFilterCatalog {
             .inProgress,
             .dateAdded,
             .dateViewed,
+            .dateReleased,
             .episodeAirDate,
             .lastWatched,
             .resolution,

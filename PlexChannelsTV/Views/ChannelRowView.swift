@@ -99,13 +99,32 @@ struct ChannelRowView: View {
 private extension ChannelRowView {
     private func nowColumn(for snapshot: Snapshot?) -> some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text(channel.name)
-                .font(.headline)
-                .foregroundStyle(.secondary)
+            channelHeader
             
             nowCard(for: snapshot)
             nowDetails(for: snapshot)
         }
+    }
+    
+    private var channelHeader: some View {
+        let libraryNames = channel.sourceLibraries.compactMap(\.title)
+        let libraryText: String = {
+            if libraryNames.isEmpty {
+                return "Unknown"
+            } else if libraryNames.count == 1 {
+                return libraryNames[0]
+            } else {
+                return libraryNames.joined(separator: ", ")
+            }
+        }()
+        let headerText = "\(channel.name) · \(libraryText)"
+        
+        return Text(headerText)
+            .font(.headline)
+            .foregroundStyle(.secondary)
+            .lineLimit(1)
+            .minimumScaleFactor(0.75)
+            .frame(maxWidth: 560, alignment: .leading)
     }
 
     private func nowCard(for snapshot: Snapshot?) -> some View {

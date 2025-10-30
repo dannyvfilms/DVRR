@@ -56,6 +56,7 @@ enum FilterField: String, CaseIterable, Codable, Hashable, Identifiable {
     case unmatched
     case dateAdded
     case dateViewed
+    case dateReleased
     case episodeAirDate
     case lastWatched
     case resolution
@@ -92,6 +93,7 @@ enum FilterField: String, CaseIterable, Codable, Hashable, Identifiable {
         case .unmatched:        return "Unmatched"
         case .dateAdded:        return "Date Added"
         case .dateViewed:       return "Date Viewed"
+        case .dateReleased:     return "Date Released"
         case .episodeAirDate:   return "Episode Air Date"
         case .lastWatched:      return "Last Watched"
         case .resolution:       return "Resolution"
@@ -116,7 +118,7 @@ enum FilterField: String, CaseIterable, Codable, Hashable, Identifiable {
             return .boolean
         case .year, .decade, .rating, .audienceRating, .plays, .duration:
             return .number
-        case .dateAdded, .dateViewed, .episodeAirDate, .lastWatched:
+        case .dateAdded, .dateViewed, .dateReleased, .episodeAirDate, .lastWatched:
             return .date
         }
     }
@@ -130,7 +132,7 @@ enum FilterField: String, CaseIterable, Codable, Hashable, Identifiable {
         case .number:
             return [.lessThan, .lessThanOrEqual, .greaterThan, .greaterThanOrEqual, .equals, .notEquals]
         case .date:
-            return [.before, .on, .after]
+            return [.before, .on, .after, .inTheLast, .notInTheLast]
         case .boolean:
             return [.equals, .notEquals]
         }
@@ -138,7 +140,7 @@ enum FilterField: String, CaseIterable, Codable, Hashable, Identifiable {
 
     var appliesTo: [FilterMediaScope] {
         switch self {
-        case .title, .genre, .collection, .label, .contentRating, .year, .decade, .rating, .audienceRating, .plays, .unwatched, .inProgress, .duplicate, .unmatched, .dateAdded, .dateViewed, .lastWatched, .resolution, .hdr, .dovi, .audioLanguage, .subtitleLanguage, .actor, .director, .writer, .duration, .country, .studio:
+        case .title, .genre, .collection, .label, .contentRating, .year, .decade, .rating, .audienceRating, .plays, .unwatched, .inProgress, .duplicate, .unmatched, .dateAdded, .dateViewed, .dateReleased, .lastWatched, .resolution, .hdr, .dovi, .audioLanguage, .subtitleLanguage, .actor, .director, .writer, .duration, .country, .studio:
             return [.movie, .show, .episode]
         case .showTitle:
             return [.episode]

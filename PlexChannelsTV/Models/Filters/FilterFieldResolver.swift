@@ -82,6 +82,8 @@ enum FilterFieldResolver {
             return item.addedAt
         case .dateViewed, .lastWatched:
             return item.lastViewedAt
+        case .dateReleased:
+            return item.originallyReleasedAt
         case .episodeAirDate:
             return item.originallyReleasedAt
         default:
@@ -92,7 +94,13 @@ enum FilterFieldResolver {
     static func boolValue(_ field: FilterField, from item: PlexMediaItem) -> Bool? {
         switch field {
         case .unwatched:
-            return (item.viewCount ?? 0) == 0
+            // Use lastViewedAt as primary indicator - if it's nil, item is unwatched
+            // Fallback to viewCount if lastViewedAt is not available
+            if item.lastViewedAt != nil {
+                return false // Has been viewed
+            } else {
+                return (item.viewCount ?? 0) == 0
+            }
         case .inProgress:
             if let duration = item.duration, duration > 0, let progress = item.viewOffset {
                 return progress > 0 && progress < duration

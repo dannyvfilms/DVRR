@@ -920,6 +920,12 @@ private extension PlexQueryBuilder {
         case .on:
             guard let range = resolveDateValue(from: value, calendar: calendar) else { return false }
             return range.contains(candidate)
+        case .inTheLast:
+            guard let threshold = resolveRelativeDateThreshold(from: value) else { return false }
+            return candidate >= threshold
+        case .notInTheLast:
+            guard let threshold = resolveRelativeDateThreshold(from: value) else { return false }
+            return candidate < threshold
         default:
             return false
         }
@@ -938,6 +944,36 @@ private extension PlexQueryBuilder {
             return start...end
         case .relativeDate(let preset):
             return preset.resolveRange(calendar: calendar, now: Date())
+        case .relativeDateSpec(let spec):
+            let threshold = spec.dateAgo
+            return threshold...Date()
+        default:
+            return nil
+        }
+    }
+
+    func resolveRelativeDateThreshold(from value: FilterValue) -> Date? {
+        switch value {
+        case .relativeDateSpec(let spec):
+            return spec.dateAgo
+        case .relativeDate(let preset):
+            // Convert preset to threshold for "in the last" operations
+            let calendar = Calendar.current
+            let now = Date()
+            switch preset {
+            case .today:
+                return calendar.startOfDay(for: now)
+            case .last7Days:
+                return calendar.date(byAdding: .day, value: -7, to: now)
+            case .last30Days:
+                return calendar.date(byAdding: .day, value: -30, to: now)
+            case .last90Days:
+                return calendar.date(byAdding: .day, value: -90, to: now)
+            case .last365Days:
+                return calendar.date(byAdding: .day, value: -365, to: now)
+            case .custom(let days):
+                return calendar.date(byAdding: .day, value: -days, to: now)
+            }
         default:
             return nil
         }
