@@ -365,10 +365,6 @@ private struct FilterRuleEditor: View {
         }
         .padding(.horizontal, 20)
         .padding(.vertical, 16)
-        .background(
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .fill(Color.white.opacity(0.04))
-        )
         .task(id: rule.field) {
             await loadOptionsIfNeeded()
         }
