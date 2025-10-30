@@ -292,16 +292,10 @@ private struct FilterRuleEditor: View {
                     Image(systemName: "chevron.down")
                         .imageScale(.small)
                 }
-                .frame(width: 240, alignment: .leading)
+                .frame(width: 240, height: 44, alignment: .leading)
                 .padding(.horizontal, 16)
-                .padding(.vertical, 12)
-                .background(
-                    RoundedRectangle(cornerRadius: 10, style: .continuous)
-                        .fill(Color.white.opacity(focusedField == .fieldPicker ? 0.18 : 0.12))
-                )
             }
             .buttonStyle(.plain)
-            .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
             .focused($focusedField, equals: .fieldPicker)
             .scaleEffect(focusedField == .fieldPicker ? 1.015 : 1.0)
             .shadow(color: focusedField == .fieldPicker ? .accentColor.opacity(0.3) : .clear, radius: 6, x: 0, y: 2)
@@ -326,16 +320,10 @@ private struct FilterRuleEditor: View {
                     Image(systemName: "chevron.down")
                         .imageScale(.small)
                 }
-                .frame(width: 240, alignment: .leading)
+                .frame(width: 240, height: 44, alignment: .leading)
                 .padding(.horizontal, 16)
-                .padding(.vertical, 12)
-                .background(
-                    RoundedRectangle(cornerRadius: 10, style: .continuous)
-                        .fill(Color.white.opacity(focusedField == .operatorPicker ? 0.18 : 0.12))
-                )
             }
             .buttonStyle(.plain)
-            .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
             .focused($focusedField, equals: .operatorPicker)
             .scaleEffect(focusedField == .operatorPicker ? 1.015 : 1.0)
             .shadow(color: focusedField == .operatorPicker ? .accentColor.opacity(0.3) : .clear, radius: 6, x: 0, y: 2)
@@ -365,6 +353,10 @@ private struct FilterRuleEditor: View {
         }
         .padding(.horizontal, 20)
         .padding(.vertical, 16)
+        .background(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .fill(Color.white.opacity(0.04))
+        )
         .task(id: rule.field) {
             await loadOptionsIfNeeded()
         }
@@ -388,14 +380,12 @@ private struct FilterRuleEditor: View {
             TextField("Value", text: bindingForText())
                 .textFieldStyle(.plain)
                 .padding(.horizontal, 16)
-                .padding(.vertical, 12)
-                .frame(width: 300)
+                .frame(width: 300, height: 44)
         case .number:
             TextField("Value", text: bindingForNumber())
                 .textFieldStyle(.plain)
                 .padding(.horizontal, 16)
-                .padding(.vertical, 12)
-                .frame(width: 180)
+                .frame(width: 180, height: 44)
         case .boolean:
             Button {
                 bindingForBool().wrappedValue.toggle()
@@ -407,9 +397,8 @@ private struct FilterRuleEditor: View {
                         .minimumScaleFactor(0.9)
                     Spacer()
                 }
-                .frame(width: 260)
+                .frame(width: 260, height: 44)
                 .padding(.horizontal, 16)
-                .padding(.vertical, 12)
                 .background(
                     RoundedRectangle(cornerRadius: 10, style: .continuous)
                         .fill(Color.white.opacity(focusedField == .valuePicker ? 0.18 : 0.12))
@@ -466,9 +455,8 @@ private struct FilterRuleEditor: View {
                     Image(systemName: "chevron.down")
                         .imageScale(.small)
                 }
-                .frame(width: 300, alignment: .leading)
+                .frame(width: 300, height: 44, alignment: .leading)
                 .padding(.horizontal, 16)
-                .padding(.vertical, 12)
                 .background(
                     RoundedRectangle(cornerRadius: 10, style: .continuous)
                         .fill(Color.white.opacity(focusedField == .valuePicker ? 0.18 : 0.12))

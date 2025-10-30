@@ -38,7 +38,7 @@ struct DateValuePicker: View {
                         .foregroundStyle(.secondary)
                 }
                 .padding(.horizontal, 18)
-                .frame(height: 52)
+                .frame(height: 44)
                 .background(
                     RoundedRectangle(cornerRadius: 14, style: .continuous)
                         .fill(Color.white.opacity(0.12))
@@ -55,7 +55,7 @@ struct DateValuePicker: View {
                         Image(systemName: "calendar")
                     }
                     .padding(.horizontal, 18)
-                    .frame(height: 52)
+                    .frame(height: 44)
                     .background(
                         RoundedRectangle(cornerRadius: 14, style: .continuous)
                             .fill(Color.white.opacity(0.12))
