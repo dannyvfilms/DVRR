@@ -294,7 +294,6 @@ private struct FilterRuleEditor: View {
                 }
                 .frame(width: 240, height: 44, alignment: .leading)
                 .padding(.horizontal, 16)
-                .background(Color.clear)
             }
             .buttonStyle(.plain)
             .focused($focusedField, equals: .fieldPicker)
@@ -323,9 +322,9 @@ private struct FilterRuleEditor: View {
                 }
                 .frame(width: 240, height: 44, alignment: .leading)
                 .padding(.horizontal, 16)
-                .background(Color.clear)
             }
             .buttonStyle(.plain)
+            .padding(.leading, 20)  // Double spacing between Actor and Contains to match Contains-Value gap
             .focused($focusedField, equals: .operatorPicker)
             .scaleEffect(focusedField == .operatorPicker ? 1.015 : 1.0)
             .shadow(color: focusedField == .operatorPicker ? .accentColor.opacity(0.3) : .clear, radius: 6, x: 0, y: 2)
@@ -383,13 +382,11 @@ private struct FilterRuleEditor: View {
                 .textFieldStyle(.plain)
                 .padding(.horizontal, 16)
                 .frame(width: 300, height: 44)
-                .background(Color.clear)
         case .number:
             TextField("Value", text: bindingForNumber())
                 .textFieldStyle(.plain)
                 .padding(.horizontal, 16)
                 .frame(width: 180, height: 44)
-                .background(Color.clear)
         case .boolean:
             Button {
                 bindingForBool().wrappedValue.toggle()
