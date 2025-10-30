@@ -288,12 +288,14 @@ private struct FilterRuleEditor: View {
                     Text(rule.field.displayName)
                         .lineLimit(1)
                         .minimumScaleFactor(0.9)
+                        .fixedSize(horizontal: true, vertical: false)
                     Spacer(minLength: 8)
                     Image(systemName: "chevron.down")
                         .imageScale(.small)
                 }
-                .frame(width: 240, height: 44, alignment: .leading)
                 .padding(.horizontal, 16)
+                .frame(height: 44, alignment: .leading)
+                .fixedSize(horizontal: true, vertical: false)
             }
             .buttonStyle(.plain)
             .focused($focusedField, equals: .fieldPicker)
@@ -316,12 +318,14 @@ private struct FilterRuleEditor: View {
                     Text(rule.op.displayName)
                         .lineLimit(1)
                         .minimumScaleFactor(0.9)
+                        .fixedSize(horizontal: true, vertical: false)
                     Spacer(minLength: 8)
                     Image(systemName: "chevron.down")
                         .imageScale(.small)
                 }
-                .frame(width: 240, height: 44, alignment: .leading)
                 .padding(.horizontal, 16)
+                .frame(height: 44, alignment: .leading)
+                .fixedSize(horizontal: true, vertical: false)
             }
             .buttonStyle(.plain)
             .padding(.leading, 20)  // Double spacing between Actor and Contains to match Contains-Value gap
@@ -381,12 +385,14 @@ private struct FilterRuleEditor: View {
             TextField("Value", text: bindingForText())
                 .textFieldStyle(.plain)
                 .padding(.horizontal, 16)
-                .frame(width: 300, height: 44)
+                .frame(height: 44)
+                .fixedSize(horizontal: true, vertical: false)
         case .number:
             TextField("Value", text: bindingForNumber())
                 .textFieldStyle(.plain)
                 .padding(.horizontal, 16)
-                .frame(width: 180, height: 44)
+                .frame(height: 44)
+                .fixedSize(horizontal: true, vertical: false)
         case .boolean:
             Button {
                 bindingForBool().wrappedValue.toggle()
@@ -398,7 +404,8 @@ private struct FilterRuleEditor: View {
                         .minimumScaleFactor(0.9)
                     Spacer()
                 }
-                .frame(width: 260, height: 44)
+                .frame(height: 44)
+                .fixedSize(horizontal: true, vertical: false)
                 .padding(.horizontal, 16)
                 .background(
                     RoundedRectangle(cornerRadius: 10, style: .continuous)
@@ -419,7 +426,6 @@ private struct FilterRuleEditor: View {
                     rule.value = .relativeDate(preset)
                 }
             )
-            .frame(width: 300)
         case .enumMulti, .enumSingle:
             // Dropdown menu for enum values with focus handling
             Menu {
@@ -456,7 +462,7 @@ private struct FilterRuleEditor: View {
                     Image(systemName: "chevron.down")
                         .imageScale(.small)
                 }
-                .frame(width: 300, height: 44, alignment: .leading)
+                .frame(height: 44, alignment: .leading)
                 .padding(.horizontal, 16)
                 .background(
                     RoundedRectangle(cornerRadius: 10, style: .continuous)
