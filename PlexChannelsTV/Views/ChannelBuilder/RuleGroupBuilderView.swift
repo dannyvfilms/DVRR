@@ -75,12 +75,12 @@ private struct GroupEditor: View {
                         .frame(width: 340, alignment: .center)
                         .padding(.horizontal, 20)
                         .padding(.vertical, 12)
+                        .background(
+                            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                                .fill(Color.white.opacity(focusedButton == .modeToggle ? 0.15 : 0.10))
+                        )
                 }
                 .buttonStyle(.plain)
-                .background(
-                    RoundedRectangle(cornerRadius: 10, style: .continuous)
-                        .fill(Color.white.opacity(focusedButton == .modeToggle ? 0.15 : 0.10))
-                )
                 .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
                 .focused($focusedButton, equals: .modeToggle)
                 .scaleEffect(focusedButton == .modeToggle ? 1.015 : 1.0)
@@ -100,12 +100,12 @@ private struct GroupEditor: View {
                     }
                     .frame(width: 220)
                     .padding(.vertical, 12)
+                    .background(
+                        RoundedRectangle(cornerRadius: 10, style: .continuous)
+                            .fill(Color.white.opacity(focusedButton == .addFilter ? 0.15 : 0.10))
+                    )
                 }
                 .buttonStyle(.plain)
-                .background(
-                    RoundedRectangle(cornerRadius: 10, style: .continuous)
-                        .fill(Color.white.opacity(focusedButton == .addFilter ? 0.15 : 0.10))
-                )
                 .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
                 .focused($focusedButton, equals: .addFilter)
                 .scaleEffect(focusedButton == .addFilter ? 1.015 : 1.0)
@@ -125,12 +125,12 @@ private struct GroupEditor: View {
                     }
                     .frame(width: 220)
                     .padding(.vertical, 12)
+                    .background(
+                        RoundedRectangle(cornerRadius: 10, style: .continuous)
+                            .fill(Color.white.opacity(focusedButton == .addGroup ? 0.15 : 0.10))
+                    )
                 }
                 .buttonStyle(.plain)
-                .background(
-                    RoundedRectangle(cornerRadius: 10, style: .continuous)
-                        .fill(Color.white.opacity(focusedButton == .addGroup ? 0.15 : 0.10))
-                )
                 .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
                 .focused($focusedButton, equals: .addGroup)
                 .scaleEffect(focusedButton == .addGroup ? 1.015 : 1.0)
@@ -295,12 +295,12 @@ private struct FilterRuleEditor: View {
                 .frame(width: 240, alignment: .leading)
                 .padding(.horizontal, 16)
                 .padding(.vertical, 12)
+                .background(
+                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                        .fill(Color.white.opacity(focusedField == .fieldPicker ? 0.18 : 0.12))
+                )
             }
             .buttonStyle(.plain)
-            .background(
-                RoundedRectangle(cornerRadius: 10, style: .continuous)
-                    .fill(Color.white.opacity(focusedField == .fieldPicker ? 0.18 : 0.12))
-            )
             .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
             .focused($focusedField, equals: .fieldPicker)
             .scaleEffect(focusedField == .fieldPicker ? 1.015 : 1.0)
@@ -329,12 +329,12 @@ private struct FilterRuleEditor: View {
                 .frame(width: 240, alignment: .leading)
                 .padding(.horizontal, 16)
                 .padding(.vertical, 12)
+                .background(
+                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                        .fill(Color.white.opacity(focusedField == .operatorPicker ? 0.18 : 0.12))
+                )
             }
             .buttonStyle(.plain)
-            .background(
-                RoundedRectangle(cornerRadius: 10, style: .continuous)
-                    .fill(Color.white.opacity(focusedField == .operatorPicker ? 0.18 : 0.12))
-            )
             .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
             .focused($focusedField, equals: .operatorPicker)
             .scaleEffect(focusedField == .operatorPicker ? 1.015 : 1.0)
@@ -351,12 +351,12 @@ private struct FilterRuleEditor: View {
                     .padding(.horizontal, 16)
                     .padding(.vertical, 12)
                     .frame(width: 70, height: 50)
+                    .background(
+                        RoundedRectangle(cornerRadius: 10, style: .continuous)
+                            .fill(Color.red.opacity(focusedField == .trashButton ? 0.25 : 0.15))
+                    )
             }
             .buttonStyle(.plain)
-            .background(
-                RoundedRectangle(cornerRadius: 10, style: .continuous)
-                    .fill(Color.red.opacity(focusedField == .trashButton ? 0.25 : 0.15))
-            )
             .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
             .focused($focusedField, equals: .trashButton)
             .scaleEffect(focusedField == .trashButton ? 1.015 : 1.0)
@@ -394,20 +394,12 @@ private struct FilterRuleEditor: View {
                 .padding(.horizontal, 16)
                 .padding(.vertical, 12)
                 .frame(width: 300)
-                .background(
-                    RoundedRectangle(cornerRadius: 10, style: .continuous)
-                        .fill(Color.white.opacity(0.12))
-                )
         case .number:
             TextField("Value", text: bindingForNumber())
                 .textFieldStyle(.plain)
                 .padding(.horizontal, 16)
                 .padding(.vertical, 12)
                 .frame(width: 180)
-                .background(
-                    RoundedRectangle(cornerRadius: 10, style: .continuous)
-                        .fill(Color.white.opacity(0.12))
-                )
         case .boolean:
             Button {
                 bindingForBool().wrappedValue.toggle()
@@ -422,12 +414,12 @@ private struct FilterRuleEditor: View {
                 .frame(width: 260)
                 .padding(.horizontal, 16)
                 .padding(.vertical, 12)
+                .background(
+                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                        .fill(Color.white.opacity(focusedField == .valuePicker ? 0.18 : 0.12))
+                )
             }
             .buttonStyle(.plain)
-            .background(
-                RoundedRectangle(cornerRadius: 10, style: .continuous)
-                    .fill(Color.white.opacity(focusedField == .valuePicker ? 0.18 : 0.12))
-            )
             .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
             .focused($focusedField, equals: .valuePicker)
             .scaleEffect(focusedField == .valuePicker ? 1.015 : 1.0)
@@ -481,12 +473,12 @@ private struct FilterRuleEditor: View {
                 .frame(width: 300, alignment: .leading)
                 .padding(.horizontal, 16)
                 .padding(.vertical, 12)
+                .background(
+                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                        .fill(Color.white.opacity(focusedField == .valuePicker ? 0.18 : 0.12))
+                )
             }
             .buttonStyle(.plain)
-            .background(
-                RoundedRectangle(cornerRadius: 10, style: .continuous)
-                    .fill(Color.white.opacity(focusedField == .valuePicker ? 0.18 : 0.12))
-            )
             .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
             .focused($focusedField, equals: .valuePicker)
             .scaleEffect(focusedField == .valuePicker ? 1.015 : 1.0)
