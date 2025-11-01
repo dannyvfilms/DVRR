@@ -32,7 +32,7 @@ struct PlexChannelsTVApp: App {
         let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.0"
         let linkService = PlexLinkService(
             clientIdentifier: plexService.clientIdentifier,
-            product: "PlexChannelsTV",
+            product: "DVRR TV",
             version: version,
             device: "Apple TV",
             platform: "tvOS",

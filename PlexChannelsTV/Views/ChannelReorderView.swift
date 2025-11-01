@@ -26,42 +26,38 @@ struct ChannelReorderView: View {
     
     var body: some View {
         NavigationStack {
-            ZStack {
-                Color.black
-                    .ignoresSafeArea()
+            VStack(spacing: 0) {
+                // Header with Done button
+                HStack {
+                    Text("Reorder Channels")
+                        .font(.title.bold())
+                        .foregroundStyle(.white)
+                    
+                    Spacer()
+                    
+                    Button("Done") {
+                        saveOrder()
+                    }
+                    .buttonStyle(.borderedProminent)
+                }
+                .padding(.horizontal, 80)
+                .padding(.top, 40)
+                .padding(.bottom, 24)
                 
                 ScrollView {
-                    VStack(spacing: 16) {
+                    VStack(spacing: 12) {
                         ForEach(Array(orderedChannels.enumerated()), id: \.element.id) { index, channel in
                             channelRow(channel, at: index)
                                 .focused($focusedIndex, equals: index)
                         }
                     }
                     .padding(.horizontal, 80)
-                    .padding(.vertical, 40)
+                    .padding(.bottom, 40)
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
-                
-                // Header with Done button
-                VStack {
-                    HStack {
-                        Text("Reorder Channels")
-                            .font(.title.bold())
-                            .foregroundStyle(.white)
-                        
-                        Spacer()
-                        
-                        Button("Done") {
-                            saveOrder()
-                        }
-                        .buttonStyle(.borderedProminent)
-                    }
-                    .padding(.horizontal, 80)
-                    .padding(.top, 40)
-                    
-                    Spacer()
-                }
             }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .background(.regularMaterial)
             .onAppear {
                 orderedChannels = channelStore.channels
                 // Set initial focus
@@ -108,9 +104,9 @@ struct ChannelReorderView: View {
                     dismiss()
                 }
             }
-            .focusable()
             .onMoveCommand { direction in
                 if let pickedUp = pickedUpIndex {
+                    AppLoggers.channel.info("event=reorder.move direction=\(direction == .up ? "up" : "down") from=\(pickedUp)")
                     handleMoveCommand(direction, from: pickedUp)
                 }
             }
@@ -122,95 +118,70 @@ struct ChannelReorderView: View {
         let isPickedUp = pickedUpIndex == index
         let isFocused = focusedIndex == index
         
-        HStack(spacing: 24) {
-            // Thumbnail
-            if let firstItem = channel.items.first,
-               let posterURL = plexService.posterArtworkURL(for: firstItem, width: 240, height: 360) {
-                CachedAsyncImage(url: posterURL) { phase in
-                    switch phase {
-                    case .success(let image):
-                        image
-                            .resizable()
-                            .scaledToFill()
-                    case .failure:
-                        placeholderThumbnail
-                    case .empty:
-                        ProgressView()
+        Button {
+            // Primary action - no-op, just for focus
+        } label: {
+            HStack(spacing: 20) {
+                // Title and metadata
+                VStack(alignment: .leading, spacing: 6) {
+                    Text(channel.name)
+                        .font(.headline)
+                    
+                    // Media type badge
+                    HStack(spacing: 6) {
+                        Image(systemName: mediaTypeIcon(for: channel.libraryType))
+                            .font(.caption2)
+                        Text(channel.libraryType.displayName)
+                            .font(.caption)
                     }
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 4)
+                    .background(Color.white.opacity(0.12))
+                    .clipShape(Capsule())
                 }
-                .frame(width: 120, height: 180)
-                .clipShape(RoundedRectangle(cornerRadius: 12))
-            } else {
-                placeholderThumbnail
-            }
-            
-            // Title and metadata
-            VStack(alignment: .leading, spacing: 8) {
-                Text(channel.name)
-                    .font(.headline)
-                    .foregroundStyle(.white)
                 
-                // Media type badge
-                HStack(spacing: 8) {
-                    Image(systemName: mediaTypeIcon(for: channel.libraryType))
-                        .font(.caption)
-                    Text(channel.libraryType.displayName)
-                        .font(.caption)
+                Spacer()
+                
+                // Grab handle (only when focused)
+                if isFocused {
+                    Image(systemName: isPickedUp ? "hand.raised.fill" : "line.3.horizontal")
+                        .font(.title3)
+                        .foregroundStyle(.secondary)
                 }
-                .foregroundStyle(.secondary)
-                .padding(.horizontal, 12)
-                .padding(.vertical, 6)
-                .background(Color.white.opacity(0.1))
-                .clipShape(Capsule())
             }
-            
-            Spacer()
-            
-            // Grab handle (only when focused)
-            if isFocused {
-                Image(systemName: isPickedUp ? "hand.raised.fill" : "line.3.horizontal")
-                    .font(.title2)
-                    .foregroundStyle(.white.opacity(0.6))
-            }
+            .padding(.horizontal, 24)
+            .padding(.vertical, 16)
+            .background(
+                RoundedRectangle(cornerRadius: 12)
+                    .fill(isFocused ? Color.accentColor.opacity(0.15) : Color.white.opacity(0.08))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 12)
+                    .stroke(isFocused ? Color.accentColor : Color.clear, lineWidth: 2)
+            )
         }
-        .padding(.horizontal, 24)
-        .padding(.vertical, 20)
-        .background(
-            RoundedRectangle(cornerRadius: 16)
-                .fill(isFocused ? Color.white.opacity(0.15) : Color.white.opacity(0.05))
-        )
-        .scaleEffect(isPickedUp ? 1.05 : (isFocused ? 1.02 : 1.0))
-        .shadow(
-            color: isFocused ? .accentColor.opacity(0.3) : .clear,
-            radius: isPickedUp ? 20 : 12
-        )
+        .buttonStyle(.plain)
+        .focused($focusedIndex, equals: index)
         .onPlayPauseCommand {
             if isFocused {
                 if let pickedUp = pickedUpIndex {
                     if pickedUp == index {
                         // Drop it
                         pickedUpIndex = nil
+                        AppLoggers.channel.info("event=reorder.drop index=\(index)")
                     } else {
-                        // Pick up the focused one
+                        // Pick up the focused one (drop the old one first)
                         pickedUpIndex = index
+                        AppLoggers.channel.info("event=reorder.pickup index=\(index) previous=\(pickedUp)")
                     }
                 } else {
                     // Pick it up
                     pickedUpIndex = index
+                    AppLoggers.channel.info("event=reorder.pickup index=\(index)")
                 }
             }
         }
-    }
-    
-    private var placeholderThumbnail: some View {
-        RoundedRectangle(cornerRadius: 12)
-            .fill(Color.gray.opacity(0.3))
-            .frame(width: 120, height: 180)
-            .overlay {
-                Image(systemName: "photo")
-                    .font(.largeTitle)
-                    .foregroundStyle(.white.opacity(0.5))
-            }
     }
     
     private func mediaTypeIcon(for type: PlexMediaType) -> String {
@@ -225,22 +196,28 @@ struct ChannelReorderView: View {
     }
     
     private func handleMoveCommand(_ direction: MoveCommandDirection, from index: Int) {
+        guard index >= 0 && index < orderedChannels.count else { return }
+        
         switch direction {
         case .up:
             if index > 0 {
                 let newIndex = index - 1
-                orderedChannels.move(fromOffsets: IndexSet(integer: index), toOffset: newIndex)
+                // Swap elements
+                orderedChannels.swapAt(index, newIndex)
                 pickedUpIndex = newIndex
                 focusedIndex = newIndex
                 hasUnsavedChanges = true
+                AppLoggers.channel.info("event=reorder.move.up from=\(index) to=\(newIndex)")
             }
         case .down:
             if index < orderedChannels.count - 1 {
                 let newIndex = index + 1
-                orderedChannels.move(fromOffsets: IndexSet(integer: index), toOffset: newIndex + 1)
+                // Swap elements
+                orderedChannels.swapAt(index, newIndex)
                 pickedUpIndex = newIndex
                 focusedIndex = newIndex
                 hasUnsavedChanges = true
+                AppLoggers.channel.info("event=reorder.move.down from=\(index) to=\(newIndex)")
             }
         @unknown default:
             break
@@ -255,18 +232,4 @@ struct ChannelReorderView: View {
     }
 }
 
-extension PlexMediaType {
-    var displayName: String {
-        switch self {
-        case .movie:
-            return "Movie"
-        case .show:
-            return "TV Show"
-        case .episode:
-            return "Episode"
-        default:
-            return "Media"
-        }
-    }
-}
 

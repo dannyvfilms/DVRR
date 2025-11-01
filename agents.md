@@ -871,6 +871,69 @@ LazyVGrid(columns: columns, spacing: 48) {  // ← Space for scale + shadow!
 
 10. **Text constraints**: Use `.lineLimit()` + `.minimumScaleFactor()` on all text
 
+11. **Button Focus Scaling - Counteracting tvOS Automatic Content Scaling**: When using `.focused()` with `.buttonStyle(.plain)`, tvOS automatically applies focus scaling (~1.015) to the content inside the button label. You MUST apply `.scaleEffect()` to scale the button container (background, overlay, border), BUT you must also apply an inverse `.scaleEffect()` to the content inside the label to prevent double-scaling.
+    
+    **The Problem**: tvOS automatically scales focused button content ~1.015. If you apply `.scaleEffect(1.015)` to the entire button, the content scales twice (~1.03 total) while the container scales once (~1.015), causing content to appear larger than the container.
+    
+    **❌ WRONG** (double-scaling content):
+    ```swift
+    Button { } label: {
+        HStack {
+            Text("Content")  // Gets scaled by tvOS (~1.015) AND scaleEffect (~1.015) = ~1.03
+        }
+        .padding()
+        .background(Color.blue)  // Only gets scaled by scaleEffect (~1.015)
+    }
+    .buttonStyle(.plain)
+    .focused($focus, equals: .button)
+    .scaleEffect(isFocused ? 1.015 : 1.0)  // Scales container, but content scales twice!
+    ```
+    
+    **✅ RIGHT** (uniform scaling with inverse content scale):
+    ```swift
+    Button { } label: {
+        HStack {
+            Text("Content")
+                .foregroundStyle(isFocused ? .black : .white)  // Dark text when focused
+        }
+        .padding()
+        // Inverse scaleEffect INSIDE label to counteract tvOS automatic content scaling
+        .scaleEffect(isFocused ? 0.985 : 1.0)  // Counteracts tvOS ~1.015 scaling
+        .animation(.easeInOut(duration: 0.075), value: isFocused)  // Twice as fast to match tvOS speed
+        .background(Color.blue)  // Background scales with button scaleEffect
+        .overlay(Rectangle().stroke())  // Overlay scales with button scaleEffect
+    }
+    .clipShape(RoundedRectangle(...))  // Clip BEFORE buttonStyle
+    .buttonStyle(.plain)
+    .focused($focus, equals: .button)
+    .scaleEffect(isFocused ? 1.015 : 1.0)  // Scales button container
+    .animation(.easeInOut(duration: 0.15), value: isFocused)  // Standard speed for container
+    ```
+    
+    **Why**: 
+    - tvOS applies automatic scaling (~1.015) to focused button content inside the label
+    - We apply `.scaleEffect(1.015)` to scale the button container (background, overlay, border)
+    - Content inside gets inverse `.scaleEffect(0.985)` to counteract tvOS scaling
+    - Result: Container scales ~1.015, content scales ~1.015 (tvOS) × 0.985 (inverse) × 1.015 (button) ≈ ~1.015 uniformly
+    - Background and overlay must be INSIDE the button label so they scale with the button's `.scaleEffect()`
+    
+    **Critical - Animation Synchronization**: 
+    - Apply `.animation()` to BOTH the content's inverse scale (inside label) AND the button's scale (outside)
+    - **Content animation must be TWICE AS FAST** as button animation to match tvOS's internal scaling speed
+    - Content animation: `.easeInOut(duration: 0.075)` (half of button duration)
+    - Button animation: `.easeInOut(duration: 0.15)` 
+    - tvOS scales button content at approximately half the speed of the container during transitions
+    - Without proper speed matching, content and container will scale at different rates during transitions, causing visual "hitches"
+    
+    **Key Principle**: 
+    - Apply inverse `.scaleEffect()` to content INSIDE the button label to counteract tvOS automatic scaling
+    - Apply `.animation()` to the inverse scale INSIDE the label with **HALF the duration** (0.075 vs 0.15) - tvOS scales content at ~half speed
+    - Change text color to dark (`.foregroundStyle(isFocused ? .black : .white)`) when focused for proper contrast
+    - Apply `.scaleEffect()` to the button AFTER `.buttonStyle()` to scale the container
+    - Apply `.animation()` to the button scale with standard duration (0.15)
+    - Background and overlay must be INSIDE the label so they scale with the button container
+    - Content animation must be twice as fast as container animation to match tvOS's internal scaling behavior
+
 **Example (Grid Cards - COMPLETE)**:
 ```swift
 ScrollView {

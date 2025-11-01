@@ -51,6 +51,7 @@ final class PlexService: ObservableObject {
         let directStream: Bool
         let directPlay: Bool
         let maxVideoBitrate: Int?
+        let sessionID: String?  // Session identifier for tracking in Plex
     }
 
     struct Session {
@@ -120,8 +121,8 @@ final class PlexService: ObservableObject {
 
     private let client: Plex
     private let credentialStore: PlexCredentialStore
-    private let productName: String
-    private let clientVersion: String
+    let productName: String  // Exposed for resource loader
+    let clientVersion: String  // Exposed for resource loader
     private let platformName: String
     private let deviceModel: String
     private let deviceDisplayName: String
@@ -134,7 +135,7 @@ final class PlexService: ObservableObject {
 
     init(
         credentialStore: PlexCredentialStore = PlexCredentialStore(),
-        productName: String = "PlexChannelsTV",
+        productName: String = "DVRR TV",
         version: String = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.0",
         platform: String = "tvOS",
         device: String = "Apple TV",
@@ -1012,6 +1013,167 @@ final class PlexService: ObservableObject {
         }
         throw PlaybackError.noStreamURL
     }
+    
+    /// Report playback via Plex timeline API
+    /// This ensures the session appears in Plex Web Dashboard and Plex Dash
+    /// The timeline API is the standard way Plex clients report playback progress
+    /// Also handles scrobbling (On Deck/watch status) when items are watched
+    func reportTimeline(
+        sessionID: String,
+        itemID: String,
+        offset: TimeInterval,
+        state: String = "playing",
+        duration: TimeInterval? = nil
+    ) async {
+        guard let currentSession = session else { return }
+        
+        // Use /:/timeline (not /video/:/timeline) - the /:/ prefix is the Plex API format
+        let path = "/:/timeline"
+        guard let url = URL(string: path, relativeTo: currentSession.server.baseURL) else { return }
+        
+        // Build query parameters
+        var queryItems = standardQueryItems(token: currentSession.server.accessToken)
+        
+        // Plex timeline API requires time and duration in MILLISECONDS, not seconds
+        let timeMs = Int(offset * 1000)
+        
+        // Calculate watch percentage for scrobbling (Plex marks as watched at 80%+)
+        if let duration, duration > 0 {
+            let durationMs = Int(duration * 1000)
+            let percentage = Int((offset / duration) * 100)
+            
+            queryItems.append(contentsOf: [
+                .init(name: "ratingKey", value: itemID),
+                .init(name: "key", value: "/library/metadata/\(itemID)"),
+                .init(name: "time", value: String(timeMs)),  // Milliseconds!
+                .init(name: "state", value: state),
+                .init(name: "duration", value: String(durationMs)),  // Milliseconds!
+                .init(name: "playQueueItemID", value: itemID)  // Required for scrobbling
+            ])
+            
+            // Mark as watched if >= 80% viewed
+            if percentage >= 80 {
+                AppLoggers.playback.info(
+                    "event=play.scrobble itemID=\(itemID, privacy: .public) percentage=\(percentage)%"
+                )
+            }
+        } else {
+            queryItems.append(contentsOf: [
+                .init(name: "ratingKey", value: itemID),
+                .init(name: "key", value: "/library/metadata/\(itemID)"),
+                .init(name: "time", value: String(timeMs)),  // Milliseconds!
+                .init(name: "state", value: state)
+            ])
+        }
+        
+        // Use query parameters in URL (Plex timeline API accepts both GET and POST with query params)
+        guard var components = URLComponents(url: url, resolvingAgainstBaseURL: true) else { return }
+        components.queryItems = queryItems
+        
+        guard let requestURL = components.url else { return }
+        
+        var request = URLRequest(url: requestURL)
+        // Plex timeline API can use either GET or POST, try GET first as it's simpler
+        request.httpMethod = "GET"
+        
+        // Add headers for session tracking (critical for session visibility)
+        request.setValue(currentSession.server.accessToken, forHTTPHeaderField: "X-Plex-Token")
+        request.setValue(clientIdentifierValue, forHTTPHeaderField: "X-Plex-Client-Identifier")
+        request.setValue(productName, forHTTPHeaderField: "X-Plex-Product")
+        request.setValue(clientVersion, forHTTPHeaderField: "X-Plex-Version")
+        request.setValue(platformName, forHTTPHeaderField: "X-Plex-Platform")
+        request.setValue(deviceModel, forHTTPHeaderField: "X-Plex-Device")
+        request.setValue(deviceDisplayName, forHTTPHeaderField: "X-Plex-Device-Name")
+        request.setValue(sessionID, forHTTPHeaderField: "X-Plex-Session-Identifier")
+        
+        // Log the request URL for debugging (redacted token)
+        let debugURL = requestURL.absoluteString.replacingOccurrences(of: currentSession.server.accessToken, with: "‹redacted›")
+        AppLoggers.playback.info("event=play.timeline.request url=\(debugURL, privacy: .public)")
+        
+        do {
+            let (_, response) = try await URLSession.shared.data(for: request)
+            guard let httpResponse = response as? HTTPURLResponse else { return }
+            
+            // Always log timeline response status for debugging
+            if (200...299).contains(httpResponse.statusCode) {
+                if state == "playing" && offset == 0 {
+                    AppLoggers.playback.info(
+                        "event=play.timeline.start itemID=\(itemID, privacy: .public) sessionID=\(sessionID, privacy: .public) status=\(httpResponse.statusCode)"
+                    )
+                } else if state == "stopped" {
+                    AppLoggers.playback.info(
+                        "event=play.timeline.stop itemID=\(itemID, privacy: .public) offsetSec=\(Int(offset)) status=\(httpResponse.statusCode)"
+                    )
+                } else {
+                    // Log successful progress updates occasionally (every 2 minutes to avoid spam)
+                    let minutes = Int(offset) / 60
+                    if minutes > 0 && minutes % 2 == 0 {
+                        let percentage = duration.flatMap { $0 > 0 ? Int((offset / $0) * 100) : nil } ?? 0
+                        AppLoggers.playback.info(
+                            "event=play.timeline.update itemID=\(itemID, privacy: .public) offsetSec=\(Int(offset)) percentage=\(percentage)% status=\(httpResponse.statusCode)"
+                        )
+                    }
+                }
+            } else {
+                AppLoggers.playback.warning(
+                    "event=play.timeline.error itemID=\(itemID, privacy: .public) status=\(httpResponse.statusCode) offsetSec=\(Int(offset)) state=\(state, privacy: .public)"
+                )
+            }
+        } catch {
+            // Silently fail - timeline updates are best effort
+            if state == "playing" && offset == 0 {
+                AppLoggers.playback.warning(
+                    "event=play.timeline.start.error itemID=\(itemID, privacy: .public) error=\(String(describing: error), privacy: .public)"
+                )
+            }
+        }
+    }
+    
+    /// Report playback session start to Plex server (via timeline API)
+    func startPlaybackSession(
+        sessionID: String,
+        itemID: String,
+        offset: TimeInterval,
+        duration: TimeInterval? = nil
+    ) async {
+        await reportTimeline(
+            sessionID: sessionID,
+            itemID: itemID,
+            offset: offset,
+            state: "playing",
+            duration: duration
+        )
+    }
+    
+    /// Report playback session update (progress) to Plex server (via timeline API)
+    func updatePlaybackSession(
+        sessionID: String,
+        itemID: String,
+        offset: TimeInterval,
+        duration: TimeInterval? = nil
+    ) async {
+        await reportTimeline(
+            sessionID: sessionID,
+            itemID: itemID,
+            offset: offset,
+            state: "playing",
+            duration: duration
+        )
+    }
+    
+    /// Report playback session stop to Plex server (via timeline API)
+    func stopPlaybackSession(
+        sessionID: String,
+        itemID: String,
+        offset: TimeInterval
+    ) async {
+        await reportTimeline(
+            sessionID: sessionID,
+            itemID: itemID,
+            offset: offset,
+            state: "stopped"
+        )
+    }
 
     func signOut() {
         credentialStore.storeSession(nil)
@@ -1490,6 +1652,8 @@ final class PlexService: ObservableObject {
         if shouldAttemptDirect, decision.supported, let directURL {
             var appliedOptions = options
             appliedOptions.forceRemux = false
+            // Generate session ID for direct play so it shows up in Plex
+            let sessionID = streamSessionIdentifier(forItemID: metadata.ratingKey, forceNew: false)
             return StreamPlan(
                 mode: .direct,
                 url: directURL,
@@ -1501,7 +1665,8 @@ final class PlexService: ObservableObject {
                 request: appliedOptions,
                 directStream: false,
                 directPlay: true,
-                maxVideoBitrate: nil
+                maxVideoBitrate: nil,
+                sessionID: sessionID
             )
         }
 
@@ -1542,6 +1707,9 @@ final class PlexService: ObservableObject {
 
         var appliedOptions = options
         appliedOptions.forceRemux = remux
+        
+        // Session ID already generated in buildHLSURL via transcodeURL
+        let sessionID = streamSessionIdentifier(forItemID: metadata.ratingKey, forceNew: options.forceNewSession)
 
         return StreamPlan(
             mode: .hls,
@@ -1554,7 +1722,8 @@ final class PlexService: ObservableObject {
             request: appliedOptions,
             directStream: remux,
             directPlay: false,
-            maxVideoBitrate: maxBitrate
+            maxVideoBitrate: maxBitrate,
+            sessionID: sessionID
         )
     }
 

@@ -34,6 +34,8 @@ struct ChannelPlayerView: View {
     @State private var adaptiveState = AdaptiveState()
     @State private var isRecovering = false
     @State private var hasLoggedSegmentStart = false
+    @State private var resourceLoaderDelegate: PlexResourceLoaderDelegate?  // Retain the delegate
+    @State private var lastSessionUpdate: Date?  // Track last session progress update
 
     var body: some View {
         ZStack(alignment: .bottomLeading) {
@@ -176,13 +178,50 @@ private extension ChannelPlayerView {
         adaptiveState.configure(for: plan, reset: resetFallback)
         hasLoggedSegmentStart = false
         isRecovering = false
+        lastSessionUpdate = nil  // Reset session update tracker
+        
+        // Report session start to Plex server so it appears in dashboard
+        if let sessionID = plan.sessionID {
+            Task {
+                await plexService.startPlaybackSession(
+                    sessionID: sessionID,
+                    itemID: entry.media.id,
+                    offset: entry.offset,
+                    duration: entry.media.duration
+                )
+            }
+        }
+        
         replacePlayerItem(with: plan, entry: refreshedEntry)
     }
 
     func replacePlayerItem(with plan: PlexService.StreamPlan, entry: PlaybackEntry) {
         clearPlayerObservers()
 
-        let item = AVPlayerItem(url: plan.url)
+        // Create AVAsset with resource loader to inject headers
+        let asset = AVURLAsset(url: plan.url)
+        
+        // Create and retain resource loader delegate with Plex headers
+        // AVAssetResourceLoader only keeps a weak reference, so we must retain it
+        if let session = plexService.session {
+            // Use the same product name and version as PlexService for consistency
+            let loaderDelegate = PlexResourceLoaderDelegate(
+                sessionID: plan.sessionID,
+                token: session.server.accessToken,
+                clientIdentifier: plexService.clientIdentifier,
+                productName: plexService.productName,
+                version: plexService.clientVersion,
+                platform: "tvOS",
+                device: "Apple TV",
+                deviceName: "Apple TV"
+            )
+            resourceLoaderDelegate = loaderDelegate  // Retain the delegate
+            asset.resourceLoader.setDelegate(loaderDelegate, queue: DispatchQueue.main)
+        } else {
+            resourceLoaderDelegate = nil
+        }
+        
+        let item = AVPlayerItem(asset: asset)
         // Increased buffer from 3s to 12s for smoother playback with less stalls
         item.preferredForwardBufferDuration = 12
         player.replaceCurrentItem(with: item)
@@ -375,6 +414,22 @@ private extension ChannelPlayerView {
     @MainActor
     func handleItemEnded(entry: PlaybackEntry, plan: PlexService.StreamPlan) {
         stopTicker()
+        
+        // Mark item as watched/scrobbled when playback completes
+        if let sessionID = plan.sessionID {
+            Task {
+                // Report completion to Plex for scrobbling/On Deck
+                let totalDuration = entry.media.duration
+                await plexService.reportTimeline(
+                    sessionID: sessionID,
+                    itemID: entry.media.id,
+                    offset: totalDuration,  // Report at end of item
+                    state: "stopped",
+                    duration: totalDuration
+                )
+            }
+        }
+        
         guard let nextEntry = nextPlaybackEntry(after: entry) else {
             playbackError = "No additional items available in this channel."
             AppLoggers.playback.error(
@@ -669,8 +724,27 @@ private extension ChannelPlayerView {
 private extension ChannelPlayerView {
     func startTicker() {
         stopTicker()
+        // Note: Cannot use [weak self] because ChannelPlayerView is a struct (SwiftUI View)
+        // SwiftUI handles memory management, so direct capture is safe
         ticker = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { _ in
             currentTime = player.currentTime()
+            
+            // Periodically update session progress (every 30 seconds)
+            let now = Date()
+            if let context = playbackContext,
+               let sessionID = context.plan.sessionID,
+               lastSessionUpdate == nil || now.timeIntervalSince(lastSessionUpdate!) >= 30 {
+                Task { @MainActor in
+                    let elapsed = elapsedSeconds(for: context)
+                    await plexService.updatePlaybackSession(
+                        sessionID: sessionID,
+                        itemID: context.entry.media.id,
+                        offset: elapsed,
+                        duration: context.entry.media.duration
+                    )
+                    lastSessionUpdate = now
+                }
+            }
         }
     }
 
@@ -708,6 +782,20 @@ private extension ChannelPlayerView {
         clearPlayerObservers()
         stopTicker()
         player.pause()
+        
+        // Report session stop to Plex server
+        if let context = playbackContext, let sessionID = context.plan.sessionID {
+            Task {
+                let elapsed = elapsedSeconds(for: context)
+                await plexService.stopPlaybackSession(
+                    sessionID: sessionID,
+                    itemID: context.entry.media.id,
+                    offset: elapsed
+                )
+            }
+        }
+        
+        resourceLoaderDelegate = nil  // Release the delegate
         onExit()
     }
 }
