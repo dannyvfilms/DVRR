@@ -224,7 +224,6 @@ struct ChannelReorderView: View {
         }
     }
     
-    
     private func handleMoveCommand(_ direction: MoveCommandDirection, from index: Int) {
         switch direction {
         case .up:
