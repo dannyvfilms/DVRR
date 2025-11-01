@@ -259,6 +259,9 @@ private struct FilterRuleEditor: View {
     @State private var textValue: String = ""
     @State private var dateValue: Date = Date()
     @State private var relativePreset: RelativeDatePreset = .last30Days
+    @State private var relativeSpec: RelativeDateSpec = RelativeDateSpec(value: 30, unit: .days)
+    @State private var relativeValueString: String = "30"
+    @State private var isEditingRelativeNumber: Bool = false
     
     @FocusState private var focusedField: FocusedRuleField?
     @State private var isMenuOpen = false
@@ -308,6 +311,31 @@ private struct FilterRuleEditor: View {
                 ForEach(rule.field.supportedOperators, id: \.self) { op in
                     Button {
                         rule.op = op
+                        // Adjust default value based on operator for date fields
+                        if rule.field.valueKind == .date {
+                            switch op {
+                            case .inTheLast, .notInTheLast:
+                                if case .relativeDateSpec = rule.value {
+                                    // keep current
+                                } else {
+                                    relativeSpec = RelativeDateSpec(value: 30, unit: .days)
+                                    relativeValueString = "30"
+                                    rule.value = .relativeDateSpec(relativeSpec)
+                                }
+                            case .before, .on, .after:
+                                if case .date = rule.value {
+                                    // keep current
+                                } else if case .relativeDate(let preset) = rule.value {
+                                    relativePreset = preset
+                                } else {
+                                    let now = Date()
+                                    dateValue = now
+                                    rule.value = .date(now)
+                                }
+                            default:
+                                break
+                            }
+                        }
                         AppLoggers.channel.info("event=builder.rules.change libraryID=\(library.uuid, privacy: .public) field=\(rule.field.id, privacy: .public) op=\(op.rawValue, privacy: .public)")
                     } label: {
                         Text(op.displayName)
@@ -328,7 +356,6 @@ private struct FilterRuleEditor: View {
                 .fixedSize(horizontal: true, vertical: false)
             }
             .buttonStyle(.plain)
-            .padding(.leading, 20)  // Double spacing between Actor and Contains to match Contains-Value gap
             .focused($focusedField, equals: .operatorPicker)
             .scaleEffect(focusedField == .operatorPicker ? 1.015 : 1.0)
             .shadow(color: focusedField == .operatorPicker ? .accentColor.opacity(0.3) : .clear, radius: 6, x: 0, y: 2)
@@ -400,17 +427,14 @@ private struct FilterRuleEditor: View {
                 HStack {
                     Spacer()
                     Text(bindingForBool().wrappedValue ? "True" : "False")
+                        .font(.headline)
+                        .multilineTextAlignment(.center)
                         .lineLimit(1)
                         .minimumScaleFactor(0.9)
                     Spacer()
                 }
                 .frame(height: 44)
-                .fixedSize(horizontal: true, vertical: false)
                 .padding(.horizontal, 16)
-                .background(
-                    RoundedRectangle(cornerRadius: 10, style: .continuous)
-                        .fill(Color.white.opacity(focusedField == .valuePicker ? 0.18 : 0.12))
-                )
             }
             .buttonStyle(.plain)
             .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
@@ -419,13 +443,72 @@ private struct FilterRuleEditor: View {
             .shadow(color: focusedField == .valuePicker ? .accentColor.opacity(0.3) : .clear, radius: 6, x: 0, y: 2)
             .animation(.easeInOut(duration: 0.15), value: focusedField == .valuePicker)
         case .date:
-            DateValuePicker(
-                selection: bindingForDate(),
-                preset: $relativePreset,
-                onPresetChange: { preset in
-                    rule.value = .relativeDate(preset)
+            if rule.op == .inTheLast || rule.op == .notInTheLast {
+                HStack(spacing: 12) {
+                    TextField("Value", text: bindingForRelativeNumber(), onEditingChanged: { editing in
+                        isEditingRelativeNumber = editing
+                    })
+                        .keyboardType(.numberPad)
+                        .textFieldStyle(.plain)
+                        .font(.headline)
+                        .multilineTextAlignment(.center)
+                        .lineLimit(1)
+                        .baselineOffset(isEditingRelativeNumber ? 0 : -6) // nudge only when not editing
+                        .padding(.horizontal, 16)
+                        .frame(width: 160, height: 44, alignment: .center)
+
+                    Menu {
+                        ForEach(TimeUnit.allCases, id: \.self) { unit in
+                            Button {
+                                relativeSpec = RelativeDateSpec(value: currentRelativeValue(), unit: unit)
+                                rule.value = .relativeDateSpec(relativeSpec)
+                            } label: {
+                                HStack {
+                                    Text(unit.displayName)
+                                    if unit == relativeSpec.unit {
+                                        Image(systemName: "checkmark")
+                                    }
+                                }
+                            }
+                        }
+                    } label: {
+                        HStack(spacing: 8) {
+                            Text(relativeSpec.unit.displayName)
+                                .lineLimit(1)
+                                .minimumScaleFactor(0.9)
+                            Spacer(minLength: 8)
+                            Image(systemName: "chevron.down")
+                                .imageScale(.small)
+                        }
+                        .frame(height: 44, alignment: .leading)
+                        .padding(.horizontal, 16)
+                    }
+                    .buttonStyle(.plain)
+                    .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                    .focused($focusedField, equals: .valuePicker)
+                    .scaleEffect(focusedField == .valuePicker ? 1.015 : 1.0)
+                    .shadow(color: focusedField == .valuePicker ? .accentColor.opacity(0.3) : .clear, radius: 6, x: 0, y: 2)
+                    .animation(.easeInOut(duration: 0.15), value: focusedField == .valuePicker)
                 }
-            )
+                .onAppear {
+                    if case .relativeDateSpec(let spec) = rule.value {
+                        relativeSpec = spec
+                        relativeValueString = String(spec.value)
+                    } else {
+                        relativeSpec = RelativeDateSpec(value: 30, unit: .days)
+                        relativeValueString = "30"
+                        rule.value = .relativeDateSpec(relativeSpec)
+                    }
+                }
+            } else {
+                DateValuePicker(
+                    selection: bindingForDate(),
+                    preset: $relativePreset,
+                    onPresetChange: { preset in
+                        rule.value = .relativeDate(preset)
+                    }
+                )
+            }
         case .enumMulti, .enumSingle:
             // Dropdown menu for enum values with focus handling
             Menu {
@@ -464,10 +547,6 @@ private struct FilterRuleEditor: View {
                 }
                 .frame(height: 44, alignment: .leading)
                 .padding(.horizontal, 16)
-                .background(
-                    RoundedRectangle(cornerRadius: 10, style: .continuous)
-                        .fill(Color.white.opacity(focusedField == .valuePicker ? 0.18 : 0.12))
-                )
             }
             .buttonStyle(.plain)
             .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
@@ -563,6 +642,9 @@ private struct FilterRuleEditor: View {
                         relativePreset = preset
                     }
                     return preset.resolveRange().lowerBound
+                case .relativeDateSpec(let spec):
+                    // For date picker path, translate spec to a threshold date
+                    return spec.dateAgo
                 default:
                     return dateValue
                 }
@@ -572,6 +654,41 @@ private struct FilterRuleEditor: View {
                 rule.value = .date(newValue)
             }
         )
+    }
+
+    private func bindingForRelativeNumber() -> Binding<String> {
+        Binding(
+            get: {
+                if case .relativeDateSpec(let spec) = rule.value {
+                    if String(spec.value) != relativeValueString {
+                        relativeValueString = String(spec.value)
+                    }
+                }
+                return relativeValueString
+            },
+            set: { newValue in
+                let digits = newValue.filter { $0.isNumber }
+                relativeValueString = digits.isEmpty ? "" : digits
+                let intValue = Int(digits) ?? 0
+                let value = max(intValue, 0)
+                relativeSpec = RelativeDateSpec(value: value, unit: currentRelativeUnit())
+                rule.value = .relativeDateSpec(relativeSpec)
+            }
+        )
+    }
+
+    private func currentRelativeValue() -> Int {
+        if case .relativeDateSpec(let spec) = rule.value {
+            return spec.value
+        }
+        return Int(relativeValueString) ?? 30
+    }
+
+    private func currentRelativeUnit() -> TimeUnit {
+        if case .relativeDateSpec(let spec) = rule.value {
+            return spec.unit
+        }
+        return relativeSpec.unit
     }
 
     private func loadOptionsIfNeeded() async {

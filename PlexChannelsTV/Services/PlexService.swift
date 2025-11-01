@@ -541,7 +541,9 @@ final class PlexService: ObservableObject {
             }
             
             episodesComponents.queryItems = [
-                URLQueryItem(name: "X-Plex-Token", value: token)
+                URLQueryItem(name: "X-Plex-Token", value: token),
+                // Request full metadata including view counts and dates
+                URLQueryItem(name: "includeMeta", value: "1")
             ]
             
             guard let episodesURL = episodesComponents.url else {

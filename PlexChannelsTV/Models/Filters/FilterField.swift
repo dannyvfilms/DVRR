@@ -59,6 +59,7 @@ enum FilterField: String, CaseIterable, Codable, Hashable, Identifiable {
     case dateReleased
     case episodeAirDate
     case lastWatched
+    case showLastWatched
     case resolution
     case hdr
     case dovi
@@ -96,6 +97,7 @@ enum FilterField: String, CaseIterable, Codable, Hashable, Identifiable {
         case .dateReleased:     return "Date Released"
         case .episodeAirDate:   return "Episode Air Date"
         case .lastWatched:      return "Last Watched"
+        case .showLastWatched:  return "Show Last Watched"
         case .resolution:       return "Resolution"
         case .hdr:              return "HDR"
         case .dovi:             return "Dolby Vision"
@@ -118,7 +120,7 @@ enum FilterField: String, CaseIterable, Codable, Hashable, Identifiable {
             return .boolean
         case .year, .decade, .rating, .audienceRating, .plays, .duration:
             return .number
-        case .dateAdded, .dateViewed, .dateReleased, .episodeAirDate, .lastWatched:
+        case .dateAdded, .dateViewed, .dateReleased, .episodeAirDate, .lastWatched, .showLastWatched:
             return .date
         }
     }
@@ -144,7 +146,7 @@ enum FilterField: String, CaseIterable, Codable, Hashable, Identifiable {
             return [.movie, .show, .episode]
         case .showTitle:
             return [.episode]
-        case .network:
+        case .network, .showLastWatched:
             return [.show, .episode]
         case .episodeAirDate:
             return [.episode]

@@ -226,11 +226,16 @@ actor PlexQueryBuilder {
     ) async throws -> [Channel.Media] {
         // For TV libraries, check if we have cached episodes first
         if library.type == .show {
+            // If we have show-level filters, we must do a fresh two-step fetch
+            // because cached episodes might be from shows that don't match current show filters
+            let hasShowLevel = hasShowLevelFilters(group)
+            
             let episodeCacheKey = makeCacheKey(for: library, mediaType: .episode)
             let episodeStoreKey = makeStoreKey(for: library, mediaType: .episode)
             
-            // Check if we have cached episodes in memory
-            if let cachedEpisodes = mediaCache[episodeCacheKey] {
+            // Only use cached episodes if we have no show-level filters
+            // Otherwise we need fresh fetch to filter shows first
+            if !hasShowLevel, let cachedEpisodes = mediaCache[episodeCacheKey] {
                 AppLoggers.channel.info("event=buildChannelMedia.cachedEpisodes libraryID=\(library.uuid, privacy: .public) itemCount=\(cachedEpisodes.itemCount)")
                 
                 // Force background refresh to find additional episodes
@@ -241,10 +246,20 @@ actor PlexQueryBuilder {
                     cacheKey: episodeCacheKey
                 )
                 
-                // Apply filters to cached episodes
+                // When using cached episodes, we need to separate show-level from episode-level filters
+                let episodeOnlyFilters = extractEpisodeLevelFilters(group)
+                let showOnlyFilters = extractShowLevelFilters(group)
+                
+                AppLoggers.channel.info("event=buildChannelMedia.memoryFiltering showFilters=\(showOnlyFilters.rules.count) episodeFilters=\(episodeOnlyFilters.rules.count) totalEpisodes=\(cachedEpisodes.items.count)")
+                
+                // Apply filters to cached episodes (only episode-level filters since shows already matched)
                 var filteredEpisodes = cachedEpisodes.items
-                if !group.isEmpty {
-                    filteredEpisodes = filteredEpisodes.filter { matches($0, group: group) }
+                if !episodeOnlyFilters.isEmpty {
+                    let beforeCount = filteredEpisodes.count
+                    filteredEpisodes = filteredEpisodes.filter { episode in
+                        matches(episode, group: episodeOnlyFilters)
+                    }
+                    AppLoggers.channel.info("event=buildChannelMedia.memoryFiltered count=\(filteredEpisodes.count)/\(beforeCount)")
                 }
                 
                 // Apply sorting
@@ -262,8 +277,8 @@ actor PlexQueryBuilder {
                 return mediaItems
             }
             
-            // Check disk cache for episodes
-            if let diskEpisodes = await cacheStore.entry(for: episodeStoreKey) {
+            // Only use disk-cached episodes if we have no show-level filters
+            if !hasShowLevel, let diskEpisodes = await cacheStore.entry(for: episodeStoreKey) {
                 mediaCache[episodeCacheKey] = diskEpisodes
                 AppLoggers.channel.info("event=buildChannelMedia.diskEpisodes libraryID=\(library.uuid, privacy: .public) itemCount=\(diskEpisodes.itemCount)")
                 
@@ -275,10 +290,31 @@ actor PlexQueryBuilder {
                     cacheKey: episodeCacheKey
                 )
                 
-                // Apply filters to cached episodes
+                // When using cached episodes, we need to separate show-level from episode-level filters
+                // Cached episodes are already from shows that matched (if any show filters existed)
+                // So we only apply episode-level filters to cached episodes
+                let episodeOnlyFilters = extractEpisodeLevelFilters(group)
+                let showOnlyFilters = extractShowLevelFilters(group)
+                
+                AppLoggers.channel.info("event=buildChannelMedia.diskFiltering showFilters=\(showOnlyFilters.rules.count) episodeFilters=\(episodeOnlyFilters.rules.count) totalEpisodes=\(diskEpisodes.items.count)")
+                
+                // Sample first few episodes to check metadata
+                let sample = diskEpisodes.items.prefix(3)
+                for episode in sample {
+                    let hasAirDate = episode.originallyReleasedAt != nil
+                    let airDateStr = episode.originallyReleasedAt?.timeIntervalSince1970.description ?? "nil"
+                    let isUnwatched = episode.lastViewedAt == nil && (episode.viewCount ?? 0) == 0
+                    AppLoggers.channel.info("event=buildChannelMedia.sampleEpisode title=\(episode.title ?? "unknown") hasAirDate=\(hasAirDate) airDate=\(airDateStr) isUnwatched=\(isUnwatched)")
+                }
+                
+                // Apply filters to cached episodes (only episode-level filters since shows already matched)
                 var filteredEpisodes = diskEpisodes.items
-                if !group.isEmpty {
-                    filteredEpisodes = filteredEpisodes.filter { matches($0, group: group) }
+                if !episodeOnlyFilters.isEmpty {
+                    let beforeCount = filteredEpisodes.count
+                    filteredEpisodes = filteredEpisodes.filter { episode in
+                        matches(episode, group: episodeOnlyFilters)
+                    }
+                    AppLoggers.channel.info("event=buildChannelMedia.diskFiltered count=\(filteredEpisodes.count)/\(beforeCount)")
                 }
                 
                 // Apply sorting
@@ -296,8 +332,12 @@ actor PlexQueryBuilder {
                 return mediaItems
             }
             
-            // No cached episodes, use two-step approach to cache episodes
-            AppLoggers.channel.info("event=buildChannelMedia.noCache libraryID=\(library.uuid, privacy: .public) proceeding with full fetch")
+            // No cached episodes OR show-level filters exist, use two-step approach
+            if hasShowLevel {
+                AppLoggers.channel.info("event=buildChannelMedia.forceFresh libraryID=\(library.uuid, privacy: .public) reason=showLevelFilters")
+            } else {
+                AppLoggers.channel.info("event=buildChannelMedia.noCache libraryID=\(library.uuid, privacy: .public) proceeding with full fetch")
+            }
             return try await buildChannelMediaForTVShows(
                 library: library,
                 using: group,
@@ -551,7 +591,7 @@ private extension PlexQueryBuilder {
         switch field {
         case .title:  // When filtering TV Shows library, this is the show title
             return true
-        case .network, .studio, .contentRating, .year, .country:
+        case .network, .studio, .contentRating, .year, .country, .showLastWatched:
             return true
         // All other fields apply to episodes
         default:
@@ -580,30 +620,21 @@ private extension PlexQueryBuilder {
         
         AppLoggers.channel.info("event=tvFilter.fetchedShows count=\(allShows.count)")
         
-        // Debug: Log some sample shows to see what we're getting
-        let sampleShows = allShows.prefix(5)
-        for (index, show) in sampleShows.enumerated() {
-            AppLoggers.channel.info("event=tvFilter.debug sampleShow[\(index)] title=\(show.title ?? "unknown") ratingKey=\(show.ratingKey)")
+        // Debug: Show filter rules (concise)
+        if !showFilters.isEmpty {
+            let ruleDescs = showFilters.rules.map { "\($0.field.displayName) \($0.op.rawValue) \($0.value.debugDescription)" }.joined(separator: ", ")
+            AppLoggers.channel.info("event=tvFilter.showFilters rules=\(showFilters.rules.count) \(ruleDescs)")
         }
         
-        // Debug: Log the show filters being applied
-        AppLoggers.channel.info("event=tvFilter.debug showFilters rules=\(showFilters.rules.count) groups=\(showFilters.groups.count)")
-        for (index, rule) in showFilters.rules.enumerated() {
-            AppLoggers.channel.info("event=tvFilter.debug showRule[\(index)] field=\(rule.field.displayName) op=\(rule.op.rawValue) value=\(rule.value.debugDescription)")
-        }
-        
+        // Filter shows and aggregate match results (no per-show logging to reduce noise)
+        var matchCount = 0
         let matchingShows = showFilters.isEmpty ? allShows : allShows.filter { show in
             let matches = matches(show, group: showFilters)
-            AppLoggers.channel.info("event=tvFilter.debug showMatch title=\(show.title ?? "unknown") matches=\(matches)")
+            if matches { matchCount += 1 }
             return matches
         }
         
-        AppLoggers.channel.info("event=tvFilter.matchedShows count=\(matchingShows.count) titles=\(matchingShows.prefix(10).map { $0.title ?? "unknown" }.joined(separator: ", "))")
-        
-        // Debug: show the actual shows we're about to process
-        for (index, show) in matchingShows.enumerated() {
-            AppLoggers.channel.info("event=tvFilter.debug matchedShow index=\(index) title=\(show.title ?? "unknown") key=\(show.ratingKey)")
-        }
+        AppLoggers.channel.info("event=tvFilter.matchedShows count=\(matchingShows.count)/\(allShows.count) titles=\(matchingShows.prefix(5).map { $0.title ?? "unknown" }.joined(separator: ", "))")
         
         // Step 3: Sort shows by newest first to prioritize recent content
         let sortedShows = matchingShows.sorted { show1, show2 in
@@ -622,19 +653,6 @@ private extension PlexQueryBuilder {
         
         for (index, show) in sortedShows.enumerated() {
             do {
-                AppLoggers.channel.info("event=tvFilter.debug processingShow index=\(index) showTitle=\(show.title ?? "unknown") showKey=\(show.ratingKey) showKeyField=\(show.key)")
-                AppLoggers.channel.info("event=tvFilter.debug loopStart index=\(index) showTitle=\(show.title ?? "unknown") showKey=\(show.ratingKey) showKeyField=\(show.key)")
-                
-                // CRITICAL: Verify we're processing the correct show
-                // The show title should match what we expect from the matchedShows array
-                let expectedTitle = show.title ?? "unknown"
-                AppLoggers.channel.info("event=tvFilter.debug verifyingShow expectedTitle=\(expectedTitle) actualTitle=\(show.title ?? "unknown")")
-                
-                // Fetch episodes directly from this specific show
-                // Use the show's ratingKey (numeric ID) to fetch episodes
-                // show.ratingKey is like "1856101"
-                AppLoggers.channel.info("event=tvFilter.debug fetchingEpisodes show=\(show.title ?? "unknown") showKey=\(show.key) ratingKey=\(show.ratingKey)")
-                
                 // Fetch episodes directly using the show's ratingKey
                 guard let currentSession = await plexService.session else {
                     throw PlexService.ServiceError.noActiveSession
@@ -646,12 +664,9 @@ private extension PlexQueryBuilder {
                     token: token
                 )
                 
-                AppLoggers.channel.info("event=tvFilter.debug showEpisodes show=\(show.title ?? "unknown") count=\(showEpisodes.count) showKey=\(show.ratingKey)")
-                
-                // Log sample episodes from this show
-                let sampleEpisodes = showEpisodes.prefix(3)
-                for (idx, episode) in sampleEpisodes.enumerated() {
-                    AppLoggers.channel.info("event=tvFilter.debug showEpisode[\(idx)] title=\(episode.title ?? "unknown") grandparentKey=\(episode.grandparentRatingKey ?? "nil") grandparentTitle=\(episode.grandparentTitle ?? "nil")")
+                // Log only first show and every 5th show to reduce noise
+                if index == 0 || index % 5 == 0 {
+                    AppLoggers.channel.info("event=tvFilter.fetchingShow[\(index)] title=\(show.title ?? "unknown") episodes=\(showEpisodes.count)")
                 }
                 
                 allEpisodes.append(contentsOf: showEpisodes)
@@ -675,32 +690,30 @@ private extension PlexQueryBuilder {
         // Final summary: Episodes were saved incrementally during the loop
         AppLoggers.cache.info("event=libraryCache.store.complete libraryID=\(library.uuid, privacy: .public) mediaType=episode totalCount=\(allEpisodes.count) showsProcessed=\(sortedShows.count)")
         
-        AppLoggers.channel.info("event=tvFilter.fetchedEpisodes count=\(allEpisodes.count)")
-        
-        // Debug: Check what we actually got
-        if let first = allEpisodes.first {
-            let hasGrandparent = first.grandparentRatingKey != nil
-            let gpKey = first.grandparentRatingKey ?? "nil"
-            let gpTitle = first.grandparentTitle ?? "nil"
-            AppLoggers.channel.info("event=tvFilter.debug firstItem hasGrandparent=\(hasGrandparent) grandparentKey=\(gpKey) grandparentTitle=\(gpTitle) ratingKey=\(first.ratingKey)")
-        }
-        
-        // Debug: Log some sample episodes to see what we're getting
-        let sampleEpisodes = allEpisodes.prefix(3)
-        for (index, episode) in sampleEpisodes.enumerated() {
-            AppLoggers.channel.info("event=tvFilter.debug sampleEpisode[\(index)] title=\(episode.title ?? "unknown") grandparentTitle=\(episode.grandparentTitle ?? "unknown")")
-        }
+        AppLoggers.channel.info("event=tvFilter.fetchedEpisodes count=\(allEpisodes.count) fromShows=\(sortedShows.count)")
         
         // Step 4: All episodes are already from matching shows, no need to filter
         var episodesFromMatchingShows = allEpisodes
-        AppLoggers.channel.info("event=tvFilter.episodesFromShows count=\(episodesFromMatchingShows.count)")
         
         // Step 5: Apply episode-level filters if any
         if !episodeFilters.isEmpty {
+            // Debug: Log episode filter rules and sample episode metadata
+            let ruleDescs = episodeFilters.rules.map { "\($0.field.displayName) \($0.op.rawValue) \($0.value.debugDescription)" }.joined(separator: ", ")
+            AppLoggers.channel.info("event=tvFilter.episodeFilters rules=\(episodeFilters.rules.count) \(ruleDescs)")
+            
+            // Sample first 2 episodes to check metadata
+            let sample = episodesFromMatchingShows.prefix(2)
+            for episode in sample {
+                let airDate = episode.originallyReleasedAt != nil
+                let isUnwatched = episode.lastViewedAt == nil && (episode.viewCount ?? 0) == 0
+                AppLoggers.channel.info("event=tvFilter.sampleEpisode title=\(episode.title ?? "unknown") hasAirDate=\(airDate) isUnwatched=\(isUnwatched)")
+            }
+            
+            let beforeCount = episodesFromMatchingShows.count
             episodesFromMatchingShows = episodesFromMatchingShows.filter { episode in
                 matches(episode, group: episodeFilters)
             }
-            AppLoggers.channel.info("event=tvFilter.afterEpisodeFilters count=\(episodesFromMatchingShows.count)")
+            AppLoggers.channel.info("event=tvFilter.afterEpisodeFilters count=\(episodesFromMatchingShows.count)/\(beforeCount)")
         }
         
         // Step 6: Apply sorting
@@ -724,12 +737,8 @@ private extension PlexQueryBuilder {
         var showRules: [FilterRule] = []
         var showGroups: [FilterGroup] = []
         
-        AppLoggers.channel.info("event=tvFilter.debug extractShowLevelFilters input rules=\(group.rules.count) groups=\(group.groups.count)")
-        
         for rule in group.rules {
-            let isShowLevel = isShowLevelField(rule.field)
-            AppLoggers.channel.info("event=tvFilter.debug extractShowLevelFilters rule field=\(rule.field.displayName) isShowLevel=\(isShowLevel)")
-            if isShowLevel {
+            if isShowLevelField(rule.field) {
                 showRules.append(rule)
             }
         }
@@ -741,10 +750,7 @@ private extension PlexQueryBuilder {
             }
         }
         
-        let result = FilterGroup(mode: group.mode, rules: showRules, groups: showGroups)
-        AppLoggers.channel.info("event=tvFilter.debug extractShowLevelFilters result rules=\(result.rules.count) groups=\(result.groups.count) isEmpty=\(result.isEmpty)")
-        
-        return result
+        return FilterGroup(mode: group.mode, rules: showRules, groups: showGroups)
     }
     
     /// Extracts only the episode-level filters from a filter group

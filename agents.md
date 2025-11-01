@@ -103,19 +103,87 @@ Native **tvOS 17+** SwiftUI app that creates **fake "live TV" channels** from a 
 **Purpose**: Translates filter rules into Plex API queries or client-side filtering  
 **Architecture**: `actor` for thread-safe concurrent operations
 **Key Methods**:
-- `buildChannelMedia(library:using:sort:limit:)` - Executes filter group and returns matching media
+- `buildChannelMedia(library:using:sort:limit:)` - **Entry point**: Executes filter group and returns matching media (routes to movie or TV path)
+- `fetchMedia(library:using:sort:limit:)` - **Movie path**: Single-step filtering on movies or episode-only TV filters
+- `buildChannelMediaForTVShows(library:using:sort:limit:)` - **TV path**: Two-step filtering (shows → episodes)
 - `count(library:using:)` - Returns count of items matching filters (for live count badge)
 - `mediaSnapshot(for:limit:mediaType:)` - Cached media fetching with progress callbacks
-- `buildChannelMediaForTVShows()` - Two-step TV show filtering (shows → episodes)
 
 **Pattern**: Translates `FilterGroup` → server-side query where possible; falls back to client-side filtering when needed. Handles nested groups with Match All/Any logic.
 
 **Critical Features**:
 - **Actor-based concurrency** - Thread-safe media caching and concurrent access
-- **TV Show Two-Step Filtering** - Separates show-level vs episode-level filters
+- **TV Show Two-Step Filtering** - Separates show-level vs episode-level filters (see detailed section below)
 - **Progress callbacks** - Real-time updates during long operations
 - **Concurrent fetch prevention** - Prevents duplicate API calls for same library
 - **Cache invalidation** - `invalidateCache(for:)` and `invalidateAllCache()`
+
+**Movie vs TV Show Filtering Architecture**:
+
+The filtering system uses **two distinct paths** based on library type and filter content:
+
+**1. Movie Filtering (Single-Step Path)**:
+```
+buildChannelMedia() → fetchMedia() → filter → sort → limit → return
+```
+- **Entry**: `buildChannelMedia()` detects `library.type == .movie` → routes to `fetchMedia()`
+- **Process**:
+  1. Fetch all movies from cache via `mediaSnapshot(for:library, mediaType:.movie)`
+  2. Apply filter group directly to movies (`items.filter { matches($0, group: group) }`)
+  3. Apply sorting if provided
+  4. Apply limit if provided
+  5. Convert `PlexMediaItem` → `Channel.Media` and return
+- **Key**: All filter rules apply directly to movie metadata (title, year, genre, etc. are all at the same level)
+
+**2. TV Show Filtering (Two-Step Path with Show/Episode Separation)**:
+```
+buildChannelMedia() → buildChannelMediaForTVShows() → [show filtering → episode expansion → episode filtering] → sort → limit → return
+```
+- **Entry**: `buildChannelMedia()` detects `library.type == .show` → checks cache, routes to `buildChannelMediaForTVShows()`
+- **Why Two-Step**: Plex stores TV metadata hierarchically - show metadata (title, year, network, studio) is separate from episode metadata (episode title, season, episode number). Must filter shows first to determine which shows match, then fetch their episodes.
+- **Process**:
+  1. **Filter Separation**: Split `FilterGroup` into show-level and episode-level filters
+     - `showFilters = extractShowLevelFilters(group)` - Rules targeting: `.title`, `.year`, `.network`, `.studio`, `.contentRating`, `.country`
+     - `episodeFilters = extractEpisodeLevelFilters(group)` - All other rules (episode title, season, etc.)
+  2. **Show Filtering**: Fetch all shows from cache, filter by show-level criteria
+     - `allShows = mediaSnapshot(for:library, mediaType:.show)`
+     - `matchingShows = allShows.filter { matches($0, group: showFilters) }`
+  3. **Episode Expansion**: Fetch episodes from each matching show
+     - For each show in `matchingShows`, call `plexService.fetchShowEpisodes(showRatingKey:)`
+     - Episodes are saved incrementally to episode cache after each show
+     - Result: `allEpisodes` contains all episodes from matching shows
+  4. **Episode Filtering**: Apply episode-level filters to expanded episodes
+     - If `episodeFilters` not empty: `episodesFromMatchingShows = allEpisodes.filter { matches($0, group: episodeFilters) }`
+  5. **Final Steps**: Apply sorting, limit, convert to `Channel.Media`
+- **Cache Strategy**: 
+  - Shows cached separately from episodes (`mediaType: .show` vs `.episode`)
+  - If episode cache exists, uses cached episodes and skips show filtering (assumes all episodes already loaded)
+  - If no episode cache, performs full two-step process and populates cache
+- **Key Distinction**: Show-level filters determine which shows to consider; episode-level filters determine which episodes from those shows to include
+
+**Show-Level Field Detection**:
+- `isShowLevelField(_ field: FilterField) -> Bool` determines if a field applies to shows or episodes
+- **Show-level fields**: `.title` (show title), `.year`, `.network`, `.studio`, `.contentRating`, `.country`
+- **Episode-level fields**: All others (episode title, season, episode number, genres, labels, collections, etc.)
+- `hasShowLevelFilters(_ group: FilterGroup) -> Bool` recursively checks if any rule in a filter group targets show-level fields
+
+**Filter Extraction Methods**:
+- `extractShowLevelFilters(_ group: FilterGroup) -> FilterGroup`: Recursively extracts only show-level rules and nested groups, preserves group mode (Match All/Any)
+- `extractEpisodeLevelFilters(_ group: FilterGroup) -> FilterGroup`: Recursively extracts only episode-level rules and nested groups, preserves group mode
+- **Critical**: Both methods preserve nested group structure and logic mode, ensuring Match All/Any semantics are maintained when filters are split
+
+**When Each Path Is Used**:
+- **Movie Path** (`fetchMedia`): Always used for `.movie` libraries
+- **TV Path with Show Filtering** (`buildChannelMediaForTVShows`): Used when `library.type == .show` AND no episode cache exists
+- **TV Path with Cached Episodes**: When `library.type == .show` AND episode cache exists, filters cached episodes directly (skips show filtering step, assumes all episodes already loaded from previous two-step run)
+- **Episode-Only Filtering**: If TV library has no show-level filters, `fetchMedia` can be used directly with `mediaType: .episode` (but this path is less common)
+
+**Important Implementation Details**:
+- Episode cache key: `"\(library.uuid)_episode"` vs Show cache key: `"\(library.uuid)_show"`
+- Episodes are fetched per-show via `plexService.fetchShowEpisodes()` using show's `ratingKey`
+- Episode cache is saved incrementally after each show to prevent data loss on interruption
+- Sorting is applied AFTER filtering (applies to final episode list, not shows)
+- Show-level filtering happens BEFORE episode expansion (critical performance optimization - don't fetch episodes from shows that don't match)
 
 #### `PlexSortCatalog` (Channel Builder)
 **Purpose**: Provides available sort options for library types  
@@ -490,26 +558,75 @@ actor PlexQueryBuilder {
 
 ### 8. TV Show Two-Step Filtering
 
-**The Problem**: TV shows require filtering at both show-level (title, year, genre) and episode-level (episode title, season) metadata.
+**The Problem**: TV shows require filtering at both show-level (title, year, genre) and episode-level (episode title, season) metadata. Unlike movies where all metadata is at a single level, TV shows have a hierarchical structure where show metadata is separate from episode metadata.
+
+**Architecture**: See detailed documentation in `PlexQueryBuilder` section above. This pattern summarizes the key concepts.
 
 **Pattern**:
 ```swift
 // Step 1: Determine if filters target show-level fields
 func hasShowLevelFilters(_ group: FilterGroup) -> Bool {
-    // Check if any rules target show.title, show.year, etc.
+    // Recursively check if any rules target show.title, show.year, etc.
+    for rule in group.rules {
+        if isShowLevelField(rule.field) { return true }
+    }
+    for nestedGroup in group.groups {
+        if hasShowLevelFilters(nestedGroup) { return true }
+    }
+    return false
 }
 
-// Step 2: Separate filters
-let showFilters = extractShowLevelFilters(group)
-let episodeFilters = extractEpisodeLevelFilters(group)
+// Step 2: Separate filters by level
+let showFilters = extractShowLevelFilters(group)      // .title, .year, .network, .studio, etc.
+let episodeFilters = extractEpisodeLevelFilters(group) // Episode title, season, episode number, etc.
 
-// Step 3: Filter shows first, then expand to episodes
-let matchingShows = allShows.filter { matches($0, group: showFilters) }
-let allEpisodes = matchingShows.flatMap { fetchEpisodes(for: $0) }
-let finalEpisodes = allEpisodes.filter { matches($0, group: episodeFilters) }
+// Step 3: Two-step filtering process
+// A. Filter shows first (prevents unnecessary episode fetching)
+let allShows = try await mediaSnapshot(for: library, mediaType: .show)
+let matchingShows = showFilters.isEmpty ? allShows : allShows.filter { matches($0, group: showFilters) }
+
+// B. Expand to episodes from matching shows only
+var allEpisodes: [PlexMediaItem] = []
+for show in matchingShows {
+    let showEpisodes = try await plexService.fetchShowEpisodes(showRatingKey: show.ratingKey)
+    allEpisodes.append(contentsOf: showEpisodes)
+    // Incremental cache save after each show
+    await cacheStore.store(items: allEpisodes, for: episodeCacheKey)
+}
+
+// C. Apply episode-level filters to expanded episodes
+let finalEpisodes = episodeFilters.isEmpty 
+    ? allEpisodes 
+    : allEpisodes.filter { matches($0, group: episodeFilters) }
 ```
 
-**Why**: Plex stores TV metadata hierarchically - show metadata is separate from episode metadata. Must filter shows first, then fetch their episodes.
+**Key Methods** (in `PlexQueryBuilder`):
+- `buildChannelMediaForTVShows()` - Main two-step filtering orchestrator
+- `isShowLevelField(_ field: FilterField) -> Bool` - Determines if field targets shows or episodes
+- `extractShowLevelFilters(_ group: FilterGroup) -> FilterGroup` - Recursively extracts show-level rules while preserving nested structure
+- `extractEpisodeLevelFilters(_ group: FilterGroup) -> FilterGroup` - Recursively extracts episode-level rules while preserving nested structure
+
+**Why**: 
+- Plex stores TV metadata hierarchically - show metadata is separate from episode metadata
+- Must filter shows first to determine which shows match criteria (performance: don't fetch episodes from shows that don't match)
+- Then expand to episodes from matching shows
+- Finally apply episode-level filters to the expanded episode list
+- **Critical**: This two-step process MUST be maintained separately from movie filtering (which is single-step) because the data structure is fundamentally different
+
+**Show-Level vs Episode-Level Fields**:
+- **Show-level**: `.title` (show title), `.year`, `.network`, `.studio`, `.contentRating`, `.country`
+- **Episode-level**: All others including episode title, season, episode number, genres (when filtered on episodes), labels, collections, etc.
+
+**Cache Strategy**:
+- Shows and episodes cached separately (`mediaType: .show` vs `.episode`)
+- If episode cache exists, can skip show filtering and filter cached episodes directly
+- If no episode cache, must perform full two-step process to populate cache
+- Episode cache is saved incrementally (after each show) to prevent data loss on interruption
+
+**Movie vs TV Show Difference**:
+- **Movies**: Single-step - fetch movies, filter, sort, limit (all metadata at same level)
+- **TV Shows**: Two-step - filter shows → expand to episodes → filter episodes → sort → limit (hierarchical metadata)
+- **Critical**: These two paths MUST remain separate - do not try to unify them into a single method
 
 ### 9. Deterministic Randomization
 

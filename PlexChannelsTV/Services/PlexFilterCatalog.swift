@@ -42,6 +42,7 @@ actor PlexFilterCatalog {
             .dateReleased,
             .episodeAirDate,
             .lastWatched,
+            .showLastWatched,
             .resolution,
             .audioLanguage,
             .subtitleLanguage,

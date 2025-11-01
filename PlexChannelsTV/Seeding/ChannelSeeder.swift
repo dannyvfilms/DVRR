@@ -13,12 +13,14 @@ final class ChannelSeeder {
     private let channelStore: ChannelStore
     private let defaults: UserDefaults
     private let seedKey = "channelSeeder.didSeedDefaults"
+    private let queryBuilder: PlexQueryBuilder
 
     private enum SeedChannel: String, CaseIterable {
-        case moviesMix = "seed.movies.mix"
-        case moviesAction = "seed.movies.action"
-        case tvMix = "seed.tv.mix"
-        case tvComedy = "seed.tv.comedy"
+        case freshFinds = "seed.movies.freshFinds"
+        case rewatchFactory = "seed.movies.rewatchFactory"
+        case familyFavorites = "seed.movies.familyFavorites"
+        case catchUpCorner = "seed.tv.catchUpCorner"
+        case recentRoulette = "seed.tv.recentRoulette"
     }
 
     init(
@@ -29,6 +31,7 @@ final class ChannelSeeder {
         self.plexService = plexService
         self.channelStore = channelStore
         self.defaults = defaults
+        self.queryBuilder = PlexQueryBuilder(plexService: plexService)
     }
 
     func seedIfNeeded(libraries: [PlexLibrary]) async {
@@ -62,23 +65,27 @@ final class ChannelSeeder {
             var seededAny = false
 
             if !movieLibraries.isEmpty {
-                if pendingSeeds.contains(SeedChannel.moviesMix.rawValue),
-                   try await seedMoviesMix(from: movieLibraries) {
+                if pendingSeeds.contains(SeedChannel.freshFinds.rawValue),
+                   try await seedFreshFinds(from: movieLibraries) {
                     seededAny = true
                 }
-                if pendingSeeds.contains(SeedChannel.moviesAction.rawValue),
-                   try await seedMoviesAction(from: movieLibraries) {
+                if pendingSeeds.contains(SeedChannel.rewatchFactory.rawValue),
+                   try await seedRewatchFactory(from: movieLibraries) {
+                    seededAny = true
+                }
+                if pendingSeeds.contains(SeedChannel.familyFavorites.rawValue),
+                   try await seedFamilyFavorites(from: movieLibraries) {
                     seededAny = true
                 }
             }
 
             if !showLibraries.isEmpty {
-                if pendingSeeds.contains(SeedChannel.tvMix.rawValue),
-                   try await seedTVMix(from: showLibraries) {
+                if pendingSeeds.contains(SeedChannel.catchUpCorner.rawValue),
+                   try await seedCatchUpCorner(from: showLibraries) {
                     seededAny = true
                 }
-                if pendingSeeds.contains(SeedChannel.tvComedy.rawValue),
-                   try await seedTVComedy(from: showLibraries) {
+                if pendingSeeds.contains(SeedChannel.recentRoulette.rawValue),
+                   try await seedRecentRoulette(from: showLibraries) {
                     seededAny = true
                 }
             }
@@ -138,11 +145,117 @@ final class ChannelSeeder {
         return allItems
     }
 
-    private func seedMoviesMix(from libraries: [PlexLibrary]) async throws -> Bool {
-        let items = try await fetchItems(from: libraries)
-        let medias = items.compactMap(Channel.Media.from)
-        guard !medias.isEmpty else { return false }
+    private func seedFreshFinds(from libraries: [PlexLibrary]) async throws -> Bool {
+        // Fresh Finds: Date Released in the last 90 days AND unwatched is true
+        let filterGroup = FilterGroup(
+            mode: .all,
+            rules: [
+                FilterRule(
+                    field: .dateReleased,
+                    op: .inTheLast,
+                    value: .relativeDate(.last90Days)
+                ),
+                FilterRule(
+                    field: .unwatched,
+                    op: .equals,
+                    value: .boolean(true)
+                )
+            ]
+        )
+        
+        return try await createChannelFromFilters(
+            name: "Fresh Finds",
+            libraryKey: SeedChannel.freshFinds.rawValue,
+            libraries: libraries,
+            filterGroup: filterGroup
+        )
+    }
 
+    private func seedRewatchFactory(from libraries: [PlexLibrary]) async throws -> Bool {
+        // Rewatch Factory: Last watched in the last 2 years AND last watched not in the last 3 months
+        let filterGroup = FilterGroup(
+            mode: .all,
+            rules: [
+                FilterRule(
+                    field: .lastWatched,
+                    op: .inTheLast,
+                    value: .relativeDateSpec(RelativeDateSpec(value: 2, unit: .years))
+                ),
+                FilterRule(
+                    field: .lastWatched,
+                    op: .notInTheLast,
+                    value: .relativeDateSpec(RelativeDateSpec(value: 3, unit: .months))
+                )
+            ]
+        )
+        
+        return try await createChannelFromFilters(
+            name: "Rewatch Factory",
+            libraryKey: SeedChannel.rewatchFactory.rawValue,
+            libraries: libraries,
+            filterGroup: filterGroup
+        )
+    }
+
+    private func seedFamilyFavorites(from libraries: [PlexLibrary]) async throws -> Bool {
+        // Family Favorites: Last watched not in the last 2 years AND content rating is not R AND content rating is not PG-13
+        let filterGroup = FilterGroup(
+            mode: .all,
+            rules: [
+                FilterRule(
+                    field: .lastWatched,
+                    op: .notInTheLast,
+                    value: .relativeDateSpec(RelativeDateSpec(value: 2, unit: .years))
+                ),
+                FilterRule(
+                    field: .contentRating,
+                    op: .notEquals,
+                    value: .enumCase("R")
+                ),
+                FilterRule(
+                    field: .contentRating,
+                    op: .notEquals,
+                    value: .enumCase("PG-13")
+                )
+            ]
+        )
+        
+        return try await createChannelFromFilters(
+            name: "Family Favorites",
+            libraryKey: SeedChannel.familyFavorites.rawValue,
+            libraries: libraries,
+            filterGroup: filterGroup
+        )
+    }
+    
+    private func createChannelFromFilters(
+        name: String,
+        libraryKey: String,
+        libraries: [PlexLibrary],
+        filterGroup: FilterGroup
+    ) async throws -> Bool {
+        var combinedMedia: [Channel.Media] = []
+        var seenIDs = Set<String>()
+        
+        for library in libraries {
+            let mediaItems = try await queryBuilder.buildChannelMedia(
+                library: library,
+                using: filterGroup,
+                sort: nil, // Random sort - we'll shuffle manually
+                limit: nil
+            )
+            for media in mediaItems where seenIDs.insert(media.id).inserted {
+                combinedMedia.append(media)
+            }
+        }
+        
+        guard !combinedMedia.isEmpty else { return false }
+        
+        // Apply random sort using deterministic seed
+        let channelID = UUID()
+        var generator = SeededRandomNumberGenerator(seed: deterministicSeed(for: channelID))
+        combinedMedia.shuffle(using: &generator)
+        
         let sources = libraries.map { library in
             Channel.SourceLibrary(
                 id: library.uuid,
@@ -151,33 +264,128 @@ final class ChannelSeeder {
                 type: library.type
             )
         }
-
+        
         let channel = Channel(
-            name: "Movies — Mix",
-            libraryKey: "seed.movies.mix",
+            id: channelID,
+            name: name,
+            libraryKey: libraryKey,
             libraryType: .movie,
             scheduleAnchor: Date(),
-            items: medias.shuffled(),
+            items: combinedMedia,
             sourceLibraries: sources,
             options: Channel.Options(shuffle: true),
-            provenance: .seed(identifier: SeedChannel.moviesMix.rawValue)
+            provenance: .seed(identifier: libraryKey)
         )
-
+        
         let appended = await channelStore.addChannel(channel)
         if appended {
-            print("[ChannelSeeder] Created Movies — Mix with \(medias.count) items")
+            print("[ChannelSeeder] Created \(name) with \(combinedMedia.count) items")
         }
         return appended
     }
-
-    private func seedMoviesAction(from libraries: [PlexLibrary]) async throws -> Bool {
-        let items = try await fetchItems(from: libraries)
-        let filtered = items.filter { media in
-            media.genres.contains(where: { $0.tag.localizedCaseInsensitiveContains("action") })
+    
+    private func deterministicSeed(for id: UUID) -> UInt64 {
+        withUnsafeBytes(of: id.uuid) { buffer in
+            let lower = buffer.load(as: UInt64.self)
+            let upper = buffer.baseAddress!.advanced(by: 8).assumingMemoryBound(to: UInt64.self).pointee
+            return UInt64(littleEndian: lower) ^ UInt64(littleEndian: upper)
         }
-        let medias = filtered.compactMap(Channel.Media.from)
-        guard !medias.isEmpty else { return false }
+    }
 
+    private func seedCatchUpCorner(from libraries: [PlexLibrary]) async throws -> Bool {
+        // Catch-up Corner: Episode Unwatched is true, Show Last Watched is in the last 2 years, Episode Air Date is in the last 4 weeks
+        let filterGroup = FilterGroup(
+            mode: .all,
+            rules: [
+                // Show-level filter: Show Last Watched in the last 2 years
+                FilterRule(
+                    field: .showLastWatched,
+                    op: .inTheLast,
+                    value: .relativeDateSpec(RelativeDateSpec(value: 2, unit: .years))
+                ),
+                // Episode-level filters: Episode Unwatched and Episode Air Date in last 4 weeks
+                FilterRule(
+                    field: .unwatched,
+                    op: .equals,
+                    value: .boolean(true)
+                ),
+                FilterRule(
+                    field: .episodeAirDate,
+                    op: .inTheLast,
+                    value: .relativeDateSpec(RelativeDateSpec(value: 4, unit: .weeks))
+                )
+            ]
+        )
+        
+        let sortDescriptor = SortDescriptor(key: .episodeAirDate, order: .ascending)
+        
+        return try await createTVChannelFromFilters(
+            name: "Catch-up Corner",
+            libraryKey: SeedChannel.catchUpCorner.rawValue,
+            libraries: libraries,
+            filterGroup: filterGroup,
+            sort: sortDescriptor
+        )
+    }
+
+    private func seedRecentRoulette(from libraries: [PlexLibrary]) async throws -> Bool {
+        // Recent Roulette: Episode Unwatched is true, Episode Air Date is in the last 1 year
+        let filterGroup = FilterGroup(
+            mode: .all,
+            rules: [
+                FilterRule(
+                    field: .unwatched,
+                    op: .equals,
+                    value: .boolean(true)
+                ),
+                FilterRule(
+                    field: .episodeAirDate,
+                    op: .inTheLast,
+                    value: .relativeDateSpec(RelativeDateSpec(value: 1, unit: .years))
+                )
+            ]
+        )
+        
+        let sortDescriptor = SortDescriptor(key: .episodeAirDate, order: .ascending)
+        
+        return try await createTVChannelFromFilters(
+            name: "Recent Roulette",
+            libraryKey: SeedChannel.recentRoulette.rawValue,
+            libraries: libraries,
+            filterGroup: filterGroup,
+            sort: sortDescriptor
+        )
+    }
+    
+    private func createTVChannelFromFilters(
+        name: String,
+        libraryKey: String,
+        libraries: [PlexLibrary],
+        filterGroup: FilterGroup,
+        sort: SortDescriptor
+    ) async throws -> Bool {
+        var combinedMedia: [Channel.Media] = []
+        var seenIDs = Set<String>()
+        
+        for library in libraries {
+            let mediaItems = try await queryBuilder.buildChannelMedia(
+                library: library,
+                using: filterGroup,
+                sort: sort,
+                limit: nil
+            )
+            for media in mediaItems where seenIDs.insert(media.id).inserted {
+                combinedMedia.append(media)
+            }
+        }
+        
+        guard !combinedMedia.isEmpty else { return false }
+        
+        // Apply sorting to combined results (queryBuilder may have sorted per-library)
+        if sort.key != .random {
+            combinedMedia = combinedMedia.sorted(using: sort)
+        }
+        
         let sources = libraries.map { library in
             Channel.SourceLibrary(
                 id: library.uuid,
@@ -186,89 +394,22 @@ final class ChannelSeeder {
                 type: library.type
             )
         }
-
+        
         let channel = Channel(
-            name: "Movies — Action",
-            libraryKey: "seed.movies.action",
-            libraryType: .movie,
-            scheduleAnchor: Date(),
-            items: medias.shuffled(),
-            sourceLibraries: sources,
-            options: Channel.Options(shuffle: true),
-            provenance: .seed(identifier: SeedChannel.moviesAction.rawValue)
-        )
-
-        let appended = await channelStore.addChannel(channel)
-        if appended {
-            print("[ChannelSeeder] Created Movies — Action with \(medias.count) items")
-        }
-        return appended
-    }
-
-    private func seedTVMix(from libraries: [PlexLibrary]) async throws -> Bool {
-        let items = try await fetchItems(from: libraries)
-        let episodes = items.filter { $0.type == .episode }
-        let medias = episodes.compactMap(Channel.Media.from)
-        guard !medias.isEmpty else { return false }
-
-        let sources = libraries.map { library in
-            Channel.SourceLibrary(
-                id: library.uuid,
-                key: library.key,
-                title: library.title,
-                type: library.type
-            )
-        }
-
-        let channel = Channel(
-            name: "TV — Mix",
-            libraryKey: "seed.tv.mix",
+            id: UUID(),
+            name: name,
+            libraryKey: libraryKey,
             libraryType: .episode,
             scheduleAnchor: Date(),
-            items: medias.shuffled(),
+            items: combinedMedia,
             sourceLibraries: sources,
-            options: Channel.Options(shuffle: true),
-            provenance: .seed(identifier: SeedChannel.tvMix.rawValue)
+            options: Channel.Options(shuffle: false),
+            provenance: .seed(identifier: libraryKey)
         )
-
+        
         let appended = await channelStore.addChannel(channel)
         if appended {
-            print("[ChannelSeeder] Created TV — Mix with \(medias.count) items")
-        }
-        return appended
-    }
-
-    private func seedTVComedy(from libraries: [PlexLibrary]) async throws -> Bool {
-        let items = try await fetchItems(from: libraries)
-        let comedies = items.filter { item in
-            item.genres.contains(where: { $0.tag.localizedCaseInsensitiveContains("comedy") })
-        }
-        let medias = comedies.compactMap(Channel.Media.from)
-        guard !medias.isEmpty else { return false }
-
-        let sources = libraries.map { library in
-            Channel.SourceLibrary(
-                id: library.uuid,
-                key: library.key,
-                title: library.title,
-                type: library.type
-            )
-        }
-
-        let channel = Channel(
-            name: "TV — Comedy",
-            libraryKey: "seed.tv.comedy",
-            libraryType: .episode,
-            scheduleAnchor: Date(),
-            items: medias.shuffled(),
-            sourceLibraries: sources,
-            options: Channel.Options(shuffle: true),
-            provenance: .seed(identifier: SeedChannel.tvComedy.rawValue)
-        )
-
-        let appended = await channelStore.addChannel(channel)
-        if appended {
-            print("[ChannelSeeder] Created TV — Comedy with \(medias.count) items")
+            print("[ChannelSeeder] Created \(name) with \(combinedMedia.count) items")
         }
         return appended
     }

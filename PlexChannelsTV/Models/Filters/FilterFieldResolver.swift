@@ -82,6 +82,11 @@ enum FilterFieldResolver {
             return item.addedAt
         case .dateViewed, .lastWatched:
             return item.lastViewedAt
+        case .showLastWatched:
+            // For show-level filtering, return the show's lastViewedAt (when item is a show)
+            // For episodes, we'd need to fetch the show's metadata, but this is handled
+            // in the two-step filtering process where showLastWatched filters shows first
+            return item.lastViewedAt
         case .dateReleased:
             return item.originallyReleasedAt
         case .episodeAirDate:

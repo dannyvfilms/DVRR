@@ -39,10 +39,6 @@ struct DateValuePicker: View {
                 }
                 .padding(.horizontal, 18)
                 .frame(height: 44)
-                .background(
-                    RoundedRectangle(cornerRadius: 14, style: .continuous)
-                        .fill(Color.white.opacity(0.12))
-                )
             }
 
             if preset.isCustom {
@@ -56,10 +52,6 @@ struct DateValuePicker: View {
                     }
                     .padding(.horizontal, 18)
                     .frame(height: 44)
-                    .background(
-                        RoundedRectangle(cornerRadius: 14, style: .continuous)
-                            .fill(Color.white.opacity(0.12))
-                    )
                 }
             }
         }
