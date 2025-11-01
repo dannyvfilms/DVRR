@@ -1521,11 +1521,16 @@ final class PlexService: ObservableObject {
             .init(name: "mediaIndex", value: "0"),
             .init(name: "partIndex", value: "0"),
             .init(name: "audioBoost", value: "100"),
-            .init(name: "maxVideoBitrate", value: String(options.maxVideoBitrate)),
             .init(name: "subtitleSize", value: "100"),
             .init(name: "session", value: sessionID),
             .init(name: "X-Plex-Session-Identifier", value: sessionID)
         ])
+
+        // Only set maxVideoBitrate when actually transcoding (not remuxing)
+        // When remuxing (copying streams), let Plex use original bitrate
+        if let maxBitrate = options.maxVideoBitrate {
+            queryItems.append(.init(name: "maxVideoBitrate", value: String(maxBitrate)))
+        }
 
         if let videoCodec = options.videoCodec {
             queryItems.append(.init(name: "videoCodec", value: videoCodec))
@@ -1671,7 +1676,9 @@ final class PlexService: ObservableObject {
         }
 
         let remux = (options.forceRemux || isMKV) && !options.forceTranscode
-        let maxBitrate = max(1_000, options.preferredMaxBitrate)
+        // When remuxing (copying streams), don't limit bitrate - copy original quality
+        // Only limit bitrate when actually transcoding
+        let maxBitrate = remux ? nil : max(1_000, options.preferredMaxBitrate)
         let hlsOptions = HLSRequestOptions(
             directStream: remux,
             directPlay: false,
@@ -1791,7 +1798,7 @@ final class PlexService: ObservableObject {
     private struct HLSRequestOptions {
         let directStream: Bool
         let directPlay: Bool
-        let maxVideoBitrate: Int
+        let maxVideoBitrate: Int?  // nil = no limit (for remuxing)
         let videoCodec: String?
         let audioCodec: String?
         let forceNewSession: Bool
