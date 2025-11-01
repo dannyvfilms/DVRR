@@ -47,16 +47,26 @@ final class ChannelBuilderViewModel: ObservableObject {
     private var isMenuOpen = false
     private var lastProgressUpdate: [String: Date] = [:]
 
+    let existingChannelID: UUID?
+    
     init(
         plexService: PlexService,
         channelStore: ChannelStore,
-        libraries: [PlexLibrary]
+        libraries: [PlexLibrary],
+        existingChannel: Channel? = nil
     ) {
         self.plexService = plexService
         self.channelStore = channelStore
         self.allLibraries = libraries.sorted { ($0.title ?? "") < ($1.title ?? "") }
         self.queryBuilder = PlexQueryBuilder(plexService: plexService)
         self.filterCatalog = PlexFilterCatalog(plexService: plexService, queryBuilder: queryBuilder)
+        self.existingChannelID = existingChannel?.id
+        
+        // If editing existing channel, restore its draft
+        if let channel = existingChannel, let draft = channel.extractDraft() {
+            self.draft = draft
+            AppLoggers.channel.info("event=builder.edit.start channelID=\(channel.id.uuidString, privacy: .public) name=\(channel.name, privacy: .public)")
+        }
         
         // Set up progress callback
         Task {
@@ -68,6 +78,10 @@ final class ChannelBuilderViewModel: ObservableObject {
         }
         
         AppLoggers.channel.info("event=builder.view.show step=\(self.step.telemetryValue, privacy: .public)")
+    }
+    
+    var isEditing: Bool {
+        existingChannelID != nil
     }
 
     var selectedLibraryRefs: [LibraryFilterSpec.LibraryRef] {

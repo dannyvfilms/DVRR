@@ -34,16 +34,24 @@ final class ChannelStore: ObservableObject {
     }
 
     private static let storageKey = "channels.store"
+    private static let orderKey = "channels.order"
 
     @Published private(set) var channels: [Channel] = [] {
         didSet {
             persistChannels()
         }
     }
+    
+    private var channelOrder: [UUID] = [] {
+        didSet {
+            persistOrder()
+        }
+    }
 
     private let defaults: UserDefaults
     private let fileManager: FileManager
     private let storageURL: URL
+    private let orderURL: URL
     private var isRestoring = false
 
     init(
@@ -53,6 +61,7 @@ final class ChannelStore: ObservableObject {
         self.defaults = userDefaults
         self.fileManager = fileManager
         self.storageURL = ChannelStore.resolveStorageURL(using: fileManager)
+        self.orderURL = storageURL.deletingLastPathComponent().appendingPathComponent("channel_order.json", isDirectory: false)
         AppLoggers.channel.info("event=channel.persist.path path=\(self.storageURL.path, privacy: .public)")
 
         isRestoring = true
@@ -67,6 +76,19 @@ final class ChannelStore: ObservableObject {
             needsMigrationPersist = true
         } else {
             self.channels = []
+        }
+        
+        // Load channel order
+        if let order = loadChannelOrder() {
+            self.channelOrder = order
+            // Apply order if we have channels and order
+            if !channels.isEmpty && !channelOrder.isEmpty {
+                applyOrder()
+            }
+        } else if !channels.isEmpty {
+            // Initialize order from current channel order
+            channelOrder = channels.map { $0.id }
+            persistOrder()
         }
 
         isRestoring = false
@@ -100,7 +122,40 @@ final class ChannelStore: ObservableObject {
             return false
         }
         channels.append(channel)
+        if !channelOrder.contains(channel.id) {
+            channelOrder.append(channel.id)
+        }
         return true
+    }
+    
+    func setChannelOrder(_ order: [UUID]) {
+        channelOrder = order
+        applyOrder()
+    }
+    
+    private func applyOrder() {
+        // Create a dictionary for fast lookup
+        let channelDict = Dictionary(uniqueKeysWithValues: channels.map { ($0.id, $0) })
+        
+        // Build ordered array, filtering out any missing channels
+        var orderedChannels: [Channel] = []
+        var seenIDs = Set<UUID>()
+        
+        // Add channels in the specified order
+        for id in channelOrder {
+            if let channel = channelDict[id], !seenIDs.contains(id) {
+                orderedChannels.append(channel)
+                seenIDs.insert(id)
+            }
+        }
+        
+        // Add any channels not in the order (newly added channels)
+        for channel in channels where !seenIDs.contains(channel.id) {
+            orderedChannels.append(channel)
+            channelOrder.append(channel.id)
+        }
+        
+        channels = orderedChannels
     }
 
     func createChannel(
@@ -170,6 +225,7 @@ final class ChannelStore: ObservableObject {
 
     func removeChannel(_ channel: Channel) {
         channels.removeAll { $0.id == channel.id }
+        channelOrder.removeAll { $0 == channel.id }
     }
 
     private func persistChannels() {
@@ -181,6 +237,29 @@ final class ChannelStore: ObservableObject {
             try data.write(to: storageURL, options: .atomic)
         } catch {
             print("ChannelStore.persistChannels write error: \(error)")
+        }
+    }
+    
+    private func persistOrder() {
+        guard !isRestoring else { return }
+        
+        do {
+            let data = try JSONEncoder().encode(channelOrder)
+            try ensureStorageDirectoryExists()
+            try data.write(to: orderURL, options: .atomic)
+        } catch {
+            print("ChannelStore.persistOrder write error: \(error)")
+        }
+    }
+    
+    private func loadChannelOrder() -> [UUID]? {
+        guard fileManager.fileExists(atPath: orderURL.path) else { return nil }
+        do {
+            let data = try Data(contentsOf: orderURL)
+            return try JSONDecoder().decode([UUID].self, from: data)
+        } catch {
+            print("ChannelStore.loadChannelOrder decode error: \(error)")
+            return nil
         }
     }
 

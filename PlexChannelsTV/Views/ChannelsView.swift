@@ -26,6 +26,8 @@ struct ChannelsView: View {
 
     @State private var path: [Destination] = []
     @State private var showChannelBuilder = false
+    @State private var editingChannel: Channel? = nil
+    @State private var showReorderChannels = false
     @State private var hasAutoPresentedBuilder = false
     @State private var previewItems: [LibraryPreviewItem] = []
     @State private var isLoadingPreviews = false
@@ -63,6 +65,7 @@ struct ChannelsView: View {
             }
         }
         .fullScreenCover(isPresented: $showChannelBuilder, onDismiss: {
+            editingChannel = nil
             if channelStore.channels.isEmpty {
                 headerAddFocused = true
             }
@@ -71,13 +74,16 @@ struct ChannelsView: View {
                 plexService: plexService,
                 channelStore: channelStore,
                 libraries: plexService.session?.libraries ?? [],
+                existingChannel: editingChannel,
                 onComplete: { channel in
                     showChannelBuilder = false
+                    editingChannel = nil
                     hasAutoPresentedBuilder = true
                     focusChannel(channel)
                 },
                 onCancel: {
                     showChannelBuilder = false
+                    editingChannel = nil
                     if channelStore.channels.isEmpty {
                         headerAddFocused = true
                     }
@@ -102,6 +108,11 @@ struct ChannelsView: View {
                     "event=player.cover.shown channelID=\(request.channelID.uuidString, privacy: .public) channelName=\(request.channelName, privacy: .public) itemID=\(request.itemID, privacy: .public)"
                 )
             }
+        }
+        .fullScreenCover(isPresented: $showReorderChannels) {
+            ChannelReorderView()
+                .environmentObject(channelStore)
+                .environmentObject(plexService)
         }
         .onAppear {
             evaluateInitialState()
@@ -271,6 +282,17 @@ private extension ChannelsView {
     func handleMenuAction(channel: Channel, action: ChannelRowView.MenuAction) {
         let timestamp = Date()
         switch action {
+        case .edit:
+            AppLoggers.channel.info(
+                "event=channel.longPress action=edit channelID=\(channel.id.uuidString, privacy: .public) channelName=\(channel.name, privacy: .public)"
+            )
+            editingChannel = channel
+            showChannelBuilder = true
+        case .reorder:
+            AppLoggers.channel.info(
+                "event=channel.longPress action=reorder"
+            )
+            showReorderChannels = true
         case .startNow:
             AppLoggers.channel.info(
                 "event=channel.longPress action=startNow channelID=\(channel.id.uuidString, privacy: .public) channelName=\(channel.name, privacy: .public)"
@@ -348,6 +370,9 @@ private extension ChannelsView {
         action: ChannelRowView.MenuAction
     ) {
         switch action {
+        case .edit:
+            // Edit action not available from up next items, redirect to channel edit
+            handleMenuAction(channel: channel, action: .edit)
         case .startNow:
             AppLoggers.channel.info(
                 "event=channel.longPress action=startNow channelID=\(channel.id.uuidString, privacy: .public) channelName=\(channel.name, privacy: .public) itemID=\(media.id, privacy: .public)"
@@ -377,6 +402,14 @@ private extension ChannelsView {
                 "event=channel.longPress action=delete source=upnext channelID=\(channel.id.uuidString, privacy: .public) channelName=\(channel.name, privacy: .public) itemID=\(media.id, privacy: .public)"
             )
             handleMenuAction(channel: channel, action: .delete)
+        case .reorder:
+            AppLoggers.channel.info(
+                "event=channel.longPress action=reorder source=upnext"
+            )
+            handleMenuAction(channel: channel, action: .reorder)
+        case .edit:
+            // Edit from up next redirects to channel edit
+            handleMenuAction(channel: channel, action: .edit)
         }
     }
 }

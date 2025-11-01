@@ -589,3 +589,14 @@ extension Channel.Provenance: Codable {
         }
     }
 }
+
+extension Channel {
+    /// Extracts the draft from a channel if it was created with filters.
+    /// Returns nil if the channel doesn't have filter provenance.
+    func extractDraft() -> ChannelDraft? {
+        guard case .filters(let draft) = provenance else {
+            return nil
+        }
+        return draft
+    }
+}

@@ -265,6 +265,34 @@ final class ChannelSeeder {
             )
         }
         
+        // Create draft so channel can be edited later
+        let libraryRefs = libraries.map { library in
+            LibraryFilterSpec.LibraryRef(
+                id: library.uuid,
+                key: library.key,
+                title: library.title,
+                type: library.type
+            )
+        }
+        let perLibrarySpecs = libraries.map { library in
+            LibraryFilterSpec(
+                reference: LibraryFilterSpec.LibraryRef(
+                    id: library.uuid,
+                    key: library.key,
+                    title: library.title,
+                    type: library.type
+                ),
+                rootGroup: filterGroup
+            )
+        }
+        let draft = ChannelDraft(
+            name: name,
+            selectedLibraries: libraryRefs,
+            perLibrarySpecs: perLibrarySpecs,
+            sort: SortDescriptor(key: .random),
+            options: ChannelDraft.Options(shuffle: true)
+        )
+        
         let channel = Channel(
             id: channelID,
             name: name,
@@ -274,7 +302,7 @@ final class ChannelSeeder {
             items: combinedMedia,
             sourceLibraries: sources,
             options: Channel.Options(shuffle: true),
-            provenance: .seed(identifier: libraryKey)
+            provenance: .filters(draft)
         )
         
         let appended = await channelStore.addChannel(channel)
@@ -395,6 +423,34 @@ final class ChannelSeeder {
             )
         }
         
+        // Create draft so channel can be edited later
+        let libraryRefs = libraries.map { library in
+            LibraryFilterSpec.LibraryRef(
+                id: library.uuid,
+                key: library.key,
+                title: library.title,
+                type: library.type
+            )
+        }
+        let perLibrarySpecs = libraries.map { library in
+            LibraryFilterSpec(
+                reference: LibraryFilterSpec.LibraryRef(
+                    id: library.uuid,
+                    key: library.key,
+                    title: library.title,
+                    type: library.type
+                ),
+                rootGroup: filterGroup
+            )
+        }
+        let draft = ChannelDraft(
+            name: name,
+            selectedLibraries: libraryRefs,
+            perLibrarySpecs: perLibrarySpecs,
+            sort: sort,
+            options: ChannelDraft.Options(shuffle: false)
+        )
+        
         let channel = Channel(
             id: UUID(),
             name: name,
@@ -404,7 +460,7 @@ final class ChannelSeeder {
             items: combinedMedia,
             sourceLibraries: sources,
             options: Channel.Options(shuffle: false),
-            provenance: .seed(identifier: libraryKey)
+            provenance: .filters(draft)
         )
         
         let appended = await channelStore.addChannel(channel)

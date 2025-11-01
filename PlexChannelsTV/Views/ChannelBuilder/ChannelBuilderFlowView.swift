@@ -29,6 +29,7 @@ struct ChannelBuilderFlowView: View {
         plexService: PlexService,
         channelStore: ChannelStore,
         libraries: [PlexLibrary],
+        existingChannel: Channel? = nil,
         onComplete: @escaping (Channel) -> Void,
         onCancel: @escaping () -> Void
     ) {
@@ -36,7 +37,8 @@ struct ChannelBuilderFlowView: View {
         _viewModel = StateObject(wrappedValue: ChannelBuilderViewModel(
             plexService: plexService,
             channelStore: channelStore,
-            libraries: libraries
+            libraries: libraries,
+            existingChannel: existingChannel
         ))
         self.onComplete = onComplete
         self.onCancel = onCancel
@@ -268,7 +270,13 @@ struct ChannelBuilderFlowView: View {
                             .frame(height: 44)
                     } else {
                         let isLast = index >= viewModel.selectedLibraryRefs.count - 1
-                        Button(isLast ? "Create Channel" : "Next") {
+                        let buttonText: String = {
+                            if isLast {
+                                return viewModel.isEditing ? "Update Channel" : "Create Channel"
+                            }
+                            return "Next"
+                        }()
+                        Button(buttonText) {
                             if isLast {
                                 Task {
                                     await createChannel()
@@ -372,12 +380,23 @@ struct ChannelBuilderFlowView: View {
             let trimmedName = draft.name.trimmingCharacters(in: .whitespacesAndNewlines)
             let finalName = trimmedName.isEmpty ? defaultName(for: primaryType) : trimmedName
 
+            let isEditing = viewModel.isEditing
+            let finalChannelID = isEditing ? viewModel.existingChannelID! : channelID
+            
+            // Preserve scheduleAnchor when editing
+            let preservedScheduleAnchor: Date = {
+                if isEditing, let existingChannel = viewModel.channelStore.channels.first(where: { $0.id == finalChannelID }) {
+                    return existingChannel.scheduleAnchor
+                }
+                return Date()
+            }()
+            
             let channel = Channel(
-                id: channelID,
+                id: finalChannelID,
                 name: finalName,
                 libraryKey: primaryKey,
                 libraryType: primaryType,
-                scheduleAnchor: Date(),
+                scheduleAnchor: preservedScheduleAnchor,
                 items: finalMedia,
                 sourceLibraries: sources,
                 options: Channel.Options(shuffle: draft.options.shuffle),
@@ -387,20 +406,41 @@ struct ChannelBuilderFlowView: View {
             let elapsed = Int(Date().timeIntervalSince(startTime) * 1000)
             let countsSummary = perLibraryCounts.map { "\($0.key):\($0.value)" }.joined(separator: ",")
             AppLoggers.channel.info(
-                "event=builder.compile.ok perLibCounts=\(countsSummary, privacy: .public) total=\(channel.items.count) elapsedMs=\(elapsed)"
+                "event=builder.compile.ok perLibCounts=\(countsSummary, privacy: .public) total=\(channel.items.count) elapsedMs=\(elapsed) isEditing=\(isEditing)"
             )
 
-            guard viewModel.channelStore.addChannel(channel) else {
-                viewModel.errorMessage = "A channel with this name already exists."
-                AppLoggers.channel.error(
-                    "event=builder.persist.fail reason=\"duplicate_name\" channelName=\(channel.name, privacy: .public)"
+            if isEditing {
+                // Update existing channel - remove old one first
+                if let existingChannel = viewModel.channelStore.channels.first(where: { $0.id == finalChannelID }) {
+                    viewModel.channelStore.removeChannel(existingChannel)
+                }
+                // Add updated channel using addChannel method
+                // Since we removed the old channel first, addChannel should succeed (no name conflict)
+                let added = viewModel.channelStore.addChannel(channel)
+                if !added {
+                    // Name collision with different channel - this shouldn't happen but handle it
+                    viewModel.errorMessage = "Failed to update channel: name conflict."
+                    AppLoggers.channel.error(
+                        "event=builder.update.fail channelID=\(finalChannelID.uuidString, privacy: .public) reason=\"name_conflict\""
+                    )
+                    return
+                }
+                AppLoggers.channel.info(
+                    "event=builder.update.ok channelID=\(channel.id.uuidString, privacy: .public) itemCount=\(channel.items.count)"
                 )
-                return
+            } else {
+                // Create new channel
+                guard viewModel.channelStore.addChannel(channel) else {
+                    viewModel.errorMessage = "A channel with this name already exists."
+                    AppLoggers.channel.error(
+                        "event=builder.persist.fail reason=\"duplicate_name\" channelName=\(channel.name, privacy: .public)"
+                    )
+                    return
+                }
+                AppLoggers.channel.info(
+                    "event=builder.persist.ok channelID=\(channel.id.uuidString, privacy: .public) itemCount=\(channel.items.count)"
+                )
             }
-
-            AppLoggers.channel.info(
-                "event=builder.persist.ok channelID=\(channel.id.uuidString, privacy: .public) itemCount=\(channel.items.count)"
-            )
 
             onComplete(channel)
         } catch {

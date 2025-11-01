@@ -12,6 +12,8 @@ struct ChannelRowView: View {
     enum MenuAction {
         case startNow
         case startBeginning
+        case edit
+        case reorder
         case delete
     }
 
@@ -79,6 +81,21 @@ struct ChannelRowView: View {
                     "event=channel.menu.action action=startBeginning target=\(String(describing: menuTarget), privacy: .public)"
                 )
                 handleMenuSelection(.startBeginning)
+            }
+            // Only show Edit for channels created with filters (have draft provenance)
+            if case .filters = channel.provenance {
+                Button("Edit Channel") {
+                    AppLoggers.channel.info(
+                        "event=channel.menu.action action=edit target=\(String(describing: menuTarget), privacy: .public)"
+                    )
+                    handleMenuSelection(.edit)
+                }
+            }
+            Button("Reorder Channels") {
+                AppLoggers.channel.info(
+                    "event=channel.menu.action action=reorder target=\(String(describing: menuTarget), privacy: .public)"
+                )
+                handleMenuSelection(.reorder)
             }
             Button("Delete Channel", role: .destructive) {
                 AppLoggers.channel.info(
@@ -202,7 +219,7 @@ private extension ChannelRowView {
         .focused(focusBinding, equals: nowFocusID)
         .onPlayPauseCommand {
             AppLoggers.channel.info(
-                "event=channel.playPause channelID=\(channel.id.uuidString, privacy: .public) button=now"
+                "event=channel.playPause channelID=\(channel.id.uuidString, privacy: .public) button=now provenance=\(String(describing: channel.provenance), privacy: .public)"
             )
             menuTarget = .now
         }
