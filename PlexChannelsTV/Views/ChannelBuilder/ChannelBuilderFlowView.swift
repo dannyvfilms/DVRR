@@ -29,6 +29,7 @@ struct ChannelBuilderFlowView: View {
         plexService: PlexService,
         channelStore: ChannelStore,
         libraries: [PlexLibrary],
+        existingChannel: Channel? = nil,
         onComplete: @escaping (Channel) -> Void,
         onCancel: @escaping () -> Void
     ) {
@@ -36,7 +37,8 @@ struct ChannelBuilderFlowView: View {
         _viewModel = StateObject(wrappedValue: ChannelBuilderViewModel(
             plexService: plexService,
             channelStore: channelStore,
-            libraries: libraries
+            libraries: libraries,
+            existingChannel: existingChannel
         ))
         self.onComplete = onComplete
         self.onCancel = onCancel
@@ -50,8 +52,17 @@ struct ChannelBuilderFlowView: View {
             .onChange(of: viewModel.step) { _, newStep in
                 handleStepChange(newStep)
             }
+            .onChange(of: viewModel.previewUpdateTrigger) { _, _ in
+                handlePreviewUpdate()
+            }
             .onChange(of: viewModel.draft.perLibrarySpecs) { _, _ in
                 handleSpecChange()
+            }
+            .onChange(of: viewModel.draft.sort) { _, _ in
+                handleSortOrOptionChange()
+            }
+            .onChange(of: viewModel.draft.options.shuffle) { _, _ in
+                handleSortOrOptionChange()
             }
     }
     
@@ -80,26 +91,32 @@ struct ChannelBuilderFlowView: View {
     
     @ViewBuilder
     private var previewRow: some View {
-        if case .rules(let index) = viewModel.step, 
+        if case .rules(let index) = viewModel.step,
            viewModel.selectedLibraryRefs.indices.contains(index) {
             let ref = viewModel.selectedLibraryRefs[index]
-            ChannelPreviewRow(
-                previewMedia: previewMedia,
-                plexService: plexService,
-                countState: viewModel.counts[ref.id]
-            )
-        } else if case .sort = viewModel.step {
-            let totalCount = viewModel.counts.values.compactMap { $0.total }.reduce(0, +)
-            let combinedState = ChannelBuilderViewModel.CountState(
-                isLoading: false,
-                total: totalCount, 
-                approximate: false
-            )
-            ChannelPreviewRow(
-                previewMedia: previewMedia,
-                plexService: plexService,
-                countState: combinedState
-            )
+            if let library = viewModel.library(for: ref.id) {
+                let sortBinding = Binding(
+                    get: { viewModel.draft.sort },
+                    set: { viewModel.draft.sort = $0 }
+                )
+                let shuffleBinding = Binding(
+                    get: { viewModel.draft.options.shuffle },
+                    set: { viewModel.draft.options.shuffle = $0 }
+                )
+                ChannelPreviewRow(
+                    previewMedia: previewMedia,
+                    plexService: plexService,
+                    countState: viewModel.counts[ref.id],
+                    availableSortKeys: viewModel.sortCatalog.availableSorts(for: library),
+                    mediaType: library.type,
+                    sortDescriptor: sortBinding,
+                    shuffleEnabled: shuffleBinding,
+                    channelName: $viewModel.draft.name,
+                    onRefreshLibrary: {
+                        viewModel.refreshLibraryCache(for: ref.id)
+                    }
+                )
+            }
         }
     }
     
@@ -119,15 +136,25 @@ struct ChannelBuilderFlowView: View {
     private func handleStepChange(_ newStep: ChannelBuilderViewModel.Step) {
         if case .rules = newStep {
             fetchPreviewMedia()
-        } else if case .sort = newStep {
-            fetchPreviewMedia()
+        } else {
+            previewMedia = []
         }
     }
     
+    private func handlePreviewUpdate() {
+        if case .rules = viewModel.step {
+            fetchPreviewMedia()
+        }
+    }
+
     private func handleSpecChange() {
         if case .rules = viewModel.step {
             fetchPreviewMedia()
-        } else if case .sort = viewModel.step {
+        }
+    }
+
+    private func handleSortOrOptionChange() {
+        if case .rules = viewModel.step {
             fetchPreviewMedia()
         }
     }
@@ -146,8 +173,6 @@ struct ChannelBuilderFlowView: View {
             librariesStep
         case .rules(let index):
             rulesStep(index: index)
-        case .sort, .review:
-            sortAndReviewStep
         }
     }
 
@@ -167,6 +192,7 @@ struct ChannelBuilderFlowView: View {
                 LibraryMultiPickerView(
                     libraries: viewModel.allLibraries,
                     selectedIDs: selectedIDs,
+                    cacheStore: viewModel.cacheStore,
                     onToggle: viewModel.toggleLibrary
                 )
                 .onChange(of: viewModel.selectedLibraryRefs.count) { oldCount, newCount in
@@ -191,7 +217,8 @@ struct ChannelBuilderFlowView: View {
                         availableFields: viewModel.availableFields(for: library),
                         filterCatalog: viewModel.filterCatalog,
                         countState: viewModel.counts[ref.id],
-                        onSpecChange: viewModel.updateSpec
+                        onSpecChange: viewModel.updateSpec,
+                        onMenuStateChange: viewModel.setMenuOpen
                     )
                 }
             } else {
@@ -200,24 +227,6 @@ struct ChannelBuilderFlowView: View {
         } else {
             Text("Select at least one library to continue.")
                 .foregroundStyle(.secondary)
-        }
-    }
-
-    private var sortAndReviewStep: some View {
-        VStack(alignment: .leading, spacing: 24) {
-            if let first = viewModel.selectedLibraryRefs.first, let library = viewModel.library(for: first.id) {
-                SortPickerView(
-                    descriptor: $viewModel.draft.sort,
-                    draft: $viewModel.draft,
-                    availableKeys: viewModel.sortCatalog.availableSorts(for: library),
-                    libraries: viewModel.selectedLibraryRefs,
-                    counts: viewModel.counts,
-                    totalItems: viewModel.totalItemCountEstimate()
-                )
-            } else {
-                Text("Sort options will appear once a library is selected.")
-                    .foregroundStyle(.secondary)
-            }
         }
     }
 
@@ -256,57 +265,42 @@ struct ChannelBuilderFlowView: View {
                         AppLoggers.channel.info("event=builder.next.update oldCount=\(oldValue) newCount=\(newValue) isDisabled=\(newValue == 0)")
                     }
 
-                case .rules:
+                case .rules(let index):
                     Button("Back") {
-                        switch viewModel.step {
-                        case .rules(let index):
-                            viewModel.goBack(from: .rules(index: index))
-                        default:
-                            break
-                        }
+                        viewModel.goBack(from: .rules(index: index))
                     }
                     .buttonStyle(.bordered)
-                    .focused($focusedButton, equals: .back)
-
-                    Button("Next") {
-                        switch viewModel.step {
-                        case .rules(let index):
-                            viewModel.goToNextRulesStep(currentIndex: index)
-                        default:
-                            break
-                        }
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .focused($focusedButton, equals: .next)
-
-                case .sort, .review:
-                    Button("Back") {
-                        switch viewModel.step {
-                        case .sort:
-                            viewModel.goBack(from: .sort)
-                        case .review:
-                            viewModel.goBack(from: .review)
-                        default:
-                            break
-                        }
-                    }
-                    .buttonStyle(.bordered)
-                    .disabled(isCreating)
                     .focused($focusedButton, equals: .back)
 
                     if isCreating {
                         ProgressView("Creating…")
                             .progressViewStyle(.circular)
                             .frame(height: 44)
-                    } else {
-                        Button("Create Channel") {
-                            Task {
-                                await createChannel()
+                    }
+                    else {
+                        let isLast = index >= viewModel.selectedLibraryRefs.count - 1
+                        let buttonText: String = {
+                            if isLast {
+                                return viewModel.isEditing ? "Update Channel" : "Create Channel"
+                            }
+                            return "Next"
+                        }()
+                        Button(buttonText) {
+                            if isLast {
+                                Task {
+                                    await createChannel()
+                                }
+                            } else {
+                                AppLoggers.channel.info("event=builder.next.tap step=rules index=\(index)")
+                                _ = viewModel.goToNextRulesStep(currentIndex: index)
                             }
                         }
                         .buttonStyle(.borderedProminent)
-                        .disabled(viewModel.draft.selectedLibraries.isEmpty)
-                        .focused($focusedButton, equals: .create)
+                        .disabled(isLast && viewModel.draft.selectedLibraries.isEmpty)
+                        .focused($focusedButton, equals: isLast ? .create : .next)
+                        .onAppear {
+                            focusedButton = isLast ? .create : .next
+                        }
                     }
                 }
             }

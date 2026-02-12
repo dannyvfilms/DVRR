@@ -162,7 +162,7 @@ struct ChannelReorderView: View {
                     .stroke(isFocused ? Color.accentColor : Color.clear, lineWidth: 2)
             )
         }
-        .contentShape(.focusEffect, RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .contentShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
         .buttonStyle(.plain)
         .focused($focusedIndex, equals: index)
         .onPlayPauseCommand {
@@ -233,5 +233,4 @@ struct ChannelReorderView: View {
         dismiss()
     }
 }
-
 
