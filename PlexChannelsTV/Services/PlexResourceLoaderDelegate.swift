@@ -11,6 +11,7 @@ import Foundation
 /// Resource loader delegate that adds Plex headers to playback requests
 /// This ensures sessions appear in app.plex.tv and Plex Dash
 final class PlexResourceLoaderDelegate: NSObject, AVAssetResourceLoaderDelegate {
+    private static let interceptedScheme = "plexhls"
     private let sessionID: String?
     private let token: String
     private let clientIdentifier: String
@@ -40,6 +41,14 @@ final class PlexResourceLoaderDelegate: NSObject, AVAssetResourceLoaderDelegate 
         self.deviceName = deviceName
         super.init()
     }
+
+    static func resourceLoaderURL(for url: URL) -> URL {
+        guard var components = URLComponents(url: url, resolvingAgainstBaseURL: false) else {
+            return url
+        }
+        components.scheme = interceptedScheme
+        return components.url ?? url
+    }
     
     func resourceLoader(
         _ resourceLoader: AVAssetResourceLoader,
@@ -51,15 +60,24 @@ final class PlexResourceLoaderDelegate: NSObject, AVAssetResourceLoaderDelegate 
         // For HLS streams, segment requests might bypass the resource loader
         // We primarily rely on headers being set via the transcoder URL parameters and timeline API
         
-        // Only handle HTTP/HTTPS requests
+        // Handle native HTTP/HTTPS requests and custom intercepted HLS URLs.
         guard let scheme = url.scheme?.lowercased(),
-              scheme == "http" || scheme == "https" else {
+              scheme == "http" || scheme == "https" || scheme == Self.interceptedScheme else {
             return false
         }
+
+        let requestURL: URL = {
+            guard scheme == Self.interceptedScheme,
+                  var components = URLComponents(url: url, resolvingAgainstBaseURL: false) else {
+                return url
+            }
+            components.scheme = "https"
+            return components.url ?? url
+        }()
         
         // Log when resource loader intercepts a request (for debugging)
-        if url.path.contains("transcode") || url.path.contains("m3u8") {
-            print("[PlexResourceLoader] Intercepted request: \(url.path)")
+        if requestURL.path.contains("transcode") || requestURL.path.contains("m3u8") {
+            print("[PlexResourceLoader] Intercepted request: \(requestURL.path)")
         }
         
         // Handle redirects if redirect property is set
@@ -68,7 +86,7 @@ final class PlexResourceLoaderDelegate: NSObject, AVAssetResourceLoaderDelegate 
         }
         
         // Create a new mutable request from the existing request
-        var originalRequest = URLRequest(url: url)
+        var originalRequest = URLRequest(url: requestURL)
         originalRequest.httpMethod = loadingRequest.request.httpMethod
         originalRequest.allHTTPHeaderFields = loadingRequest.request.allHTTPHeaderFields
         originalRequest.httpBody = loadingRequest.request.httpBody
@@ -103,6 +121,9 @@ final class PlexResourceLoaderDelegate: NSObject, AVAssetResourceLoaderDelegate 
             guard let loadingRequest = loadingRequest else { return }
             
             if let error {
+                if requestURL.path.contains("transcode") || requestURL.path.contains("m3u8") {
+                    print("[PlexResourceLoader] Request failed path=\(requestURL.path) error=\((error as NSError).domain):\((error as NSError).code)")
+                }
                 loadingRequest.finishLoading(with: error)
                 return
             }
@@ -111,6 +132,10 @@ final class PlexResourceLoaderDelegate: NSObject, AVAssetResourceLoaderDelegate 
                 let nsError = NSError(domain: "PlexResourceLoader", code: -1, userInfo: [NSLocalizedDescriptionKey: "Invalid response"])
                 loadingRequest.finishLoading(with: nsError)
                 return
+            }
+
+            if requestURL.path.contains("transcode") || requestURL.path.contains("m3u8") {
+                print("[PlexResourceLoader] Response status=\(response.statusCode) path=\(requestURL.path) bytes=\(data.count)")
             }
             
             // Set content information first (if available)

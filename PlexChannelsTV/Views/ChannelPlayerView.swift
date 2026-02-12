@@ -193,8 +193,8 @@ private extension ChannelPlayerView {
         isRecovering = false
         lastSessionUpdate = nil  // Reset session update tracker
         
-        // For HLS transcoding, wait for timeline API call to complete before loading player item
-        // This gives the Plex transcoder time to initialize before AVFoundation tries to load the manifest
+        // For HLS transcoding, wait for timeline API call and a brief startup delay before loading.
+        // The transcoder session can take a moment to become ready, especially on first item start.
         if plan.mode == .hls, let sessionID = plan.sessionID {
             Task { @MainActor in
                 await plexService.startPlaybackSession(
@@ -204,11 +204,8 @@ private extension ChannelPlayerView {
                     duration: entry.media.duration
                 )
                 
-                // Only delay when switching items - first item can start immediately
-                // Shorter delay (200ms) is sufficient for transcoder initialization after item switch
-                if isSwitchingItems {
-                    try? await Task.sleep(nanoseconds: 200_000_000) // 0.2 seconds for item switches
-                }
+                let startupDelay: UInt64 = isSwitchingItems ? 300_000_000 : 900_000_000
+                try? await Task.sleep(nanoseconds: startupDelay)
                 
                 replacePlayerItem(with: plan, entry: refreshedEntry)
             }
@@ -232,11 +229,12 @@ private extension ChannelPlayerView {
     func replacePlayerItem(with plan: PlexService.StreamPlan, entry: PlaybackEntry) {
         clearPlayerObservers()
 
-        // Create AVAsset with resource loader to inject headers
-        let asset = AVURLAsset(url: plan.url)
+        // Route HLS through a custom scheme so AVFoundation consistently uses our resource loader.
+        let assetURL = resourceLoaderURL(for: plan)
+        let asset = AVURLAsset(url: assetURL)
         
-        // Create and retain resource loader delegate with Plex headers
-        // AVAssetResourceLoader only keeps a weak reference, so we must retain it
+        // Create and retain resource loader delegate with Plex headers.
+        // AVAssetResourceLoader only keeps a weak reference, so we must retain it.
         if let session = plexService.session {
             // Use the same product name and version as PlexService for consistency
             let loaderDelegate = PlexResourceLoaderDelegate(
@@ -261,6 +259,11 @@ private extension ChannelPlayerView {
         player.replaceCurrentItem(with: item)
         configurePlayer(for: plan, entry: entry, item: item)
         configureObservers(for: item, entry: entry, plan: plan)
+    }
+
+    func resourceLoaderURL(for plan: PlexService.StreamPlan) -> URL {
+        guard plan.mode == .hls else { return plan.url }
+        return PlexResourceLoaderDelegate.resourceLoaderURL(for: plan.url)
     }
 
     func configurePlayer(for plan: PlexService.StreamPlan, entry: PlaybackEntry, item: AVPlayerItem) {
@@ -427,13 +430,15 @@ private extension ChannelPlayerView {
     func handlePlaybackFailure(for entry: PlaybackEntry, plan: PlexService.StreamPlan, error: Error?) {
         let nsError = (error as NSError?) ?? NSError(domain: "Playback", code: -1)
         let errorCode = nsError.code
-        
-        // For HLS streams, error -1100 (file not found) often means transcoder isn't ready yet
+        let isHLSStartupAvailabilityError =
+            errorCode == -1100 || errorCode == NSURLErrorResourceUnavailable
+
+        // For HLS streams, early resource failures often mean transcoder output isn't ready yet
         // Retry once with a new session and slight delay
-        if plan.mode == .hls && errorCode == -1100 && !hasAttemptedFallback {
+        if plan.mode == .hls && isHLSStartupAvailabilityError && !hasAttemptedFallback {
             hasAttemptedFallback = true
             AppLoggers.playback.warning(
-                "event=play.retry itemID=\(entry.media.id, privacy: .public) reason=transcoder_not_ready errorCode=\(errorCode)"
+                "event=play.retry itemID=\(entry.media.id, privacy: .public) reason=hls_resource_unavailable errorCode=\(errorCode)"
             )
             
             // Wait a moment for transcoder to initialize, then retry with new session
@@ -442,7 +447,7 @@ private extension ChannelPlayerView {
                 
                 var options = plan.request
                 options.forceNewSession = true  // Force new transcoder session
-                startPlayback(for: entry, options: options, fallbackFrom: plan, fallbackReason: "transcoder_not_ready")
+                startPlayback(for: entry, options: options, fallbackFrom: plan, fallbackReason: "hls_resource_unavailable")
             }
             return
         }
