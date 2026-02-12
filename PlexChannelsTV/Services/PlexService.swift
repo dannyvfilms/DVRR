@@ -33,11 +33,16 @@ final class PlexService: ObservableObject {
 
     struct StreamRequestOptions {
         var preferDirect: Bool = true
+        #if targetEnvironment(simulator)
+        var preferredMaxBitrate: Int? = 3_000  // Simulator is less stable at high startup bitrates
+        #else
         var preferredMaxBitrate: Int? = 8_000  // nil = no limit (for remuxing), default 8Mbps for transcoding
+        #endif
         var forceTranscode: Bool = false
         var forceRemux: Bool = false
         var forceNewSession: Bool = false  // Force new transcoder session (for recovery)
         var skipRemuxForMKV: Bool = false  // Skip remuxing MKV containers and go straight to transcode (faster, more reliable)
+        var relaxedTranscodeParams: Bool = false  // Drop codec/bitrate hints for strict Plex servers that reject start.m3u8 query variants
     }
 
     struct StreamPlan {
@@ -907,8 +912,13 @@ final class PlexService: ObservableObject {
                        container == "mkv",
                        !options.forceRemux,
                        !options.forceTranscode {
-                        // Skip remux for MKV - go straight to transcoding for better reliability
+                        #if targetEnvironment(simulator)
+                        // Simulator currently behaves better if we allow MKV remux path first.
+                        adjustedOptions.skipRemuxForMKV = false
+                        #else
+                        // Device path: skip remux for MKV and go straight to transcode for reliability.
                         adjustedOptions.skipRemuxForMKV = true
+                        #endif
                     }
                     
                     let plan = try buildStreamPlan(
@@ -919,6 +929,16 @@ final class PlexService: ObservableObject {
                         offset: offset,
                         options: adjustedOptions
                     )
+
+                    // HLS preflight is useful for first-attempt server/token vetting, but during
+                    // recovery (forceNewSession) it can produce transient 400s that block retry.
+                    // On tvOS Simulator, preflight is noisy/unreliable and can block otherwise
+                    // playable streams, so skip it there.
+                    #if !targetEnvironment(simulator)
+                    if plan.mode == .hls && !options.forceNewSession {
+                        try await validateHLSStartupURL(plan.url)
+                    }
+                    #endif
 
                     if index != 0 {
                         promoteActiveServer(to: baseURL, allURLs: urls, preservingLibraries: currentSession.libraries)
@@ -937,6 +957,12 @@ final class PlexService: ObservableObject {
                     )
                     AppLoggers.net.info(
                         "event=net.retry reason=auth currentTokenType=\(tokenCandidate.type.rawValue, privacy: .public)"
+                    )
+                    lastError = PlaybackError.noStreamURL
+                    continue
+                } catch StreamResolutionError.transcodeRejected(let status) {
+                    AppLoggers.net.error(
+                        "event=net.transcodeRejected status=\(status) url=\(baseURL.redactedForLogging(), privacy: .public) tokenType=\(tokenCandidate.type.rawValue, privacy: .public)"
                     )
                     lastError = PlaybackError.noStreamURL
                     continue
@@ -1256,7 +1282,6 @@ final class PlexService: ObservableObject {
         }
         let message = lastError?.localizedDescription ?? "Unknown"
         print("PlexService.restorePersistedSession error: \(message)")
-        credentialStore.storeSession(nil)
     }
 
     private func selectBestServer(
@@ -1531,7 +1556,6 @@ final class PlexService: ObservableObject {
             .init(name: "directPlay", value: options.directPlay ? "1" : "0"),
             .init(name: "directStream", value: options.directStream ? "1" : "0"),
             .init(name: "fastSeek", value: "1"),
-            .init(name: "copyts", value: "1"),
             .init(name: "mediaIndex", value: "0"),
             .init(name: "partIndex", value: "0"),
             .init(name: "audioBoost", value: "100"),
@@ -1539,6 +1563,12 @@ final class PlexService: ObservableObject {
             .init(name: "session", value: sessionID),
             .init(name: "X-Plex-Session-Identifier", value: sessionID)
         ])
+
+        // copyts can trigger HTTP 400 on some Plex servers when transcoding (directStream=0).
+        // Keep it only for remux-style direct stream plans.
+        if options.directStream {
+            queryItems.append(.init(name: "copyts", value: "1"))
+        }
 
         // Only set maxVideoBitrate when actually transcoding (not remuxing)
         // When remuxing (copying streams), let Plex use original bitrate
@@ -1577,6 +1607,7 @@ final class PlexService: ObservableObject {
 
         var request = URLRequest(url: url)
         request.httpMethod = "GET"
+        request.timeoutInterval = 8
         request.setValue("application/json", forHTTPHeaderField: "Accept")
         request.setValue("application/json", forHTTPHeaderField: "X-Plex-Accept")
         request.setValue(productName, forHTTPHeaderField: "X-Plex-Product")
@@ -1642,6 +1673,45 @@ final class PlexService: ObservableObject {
         return components.url
     }
 
+    private func validateHLSStartupURL(_ url: URL) async throws {
+        var request = URLRequest(url: url)
+        request.httpMethod = "GET"
+        request.timeoutInterval = 6
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        request.setValue("application/json", forHTTPHeaderField: "X-Plex-Accept")
+        request.setValue(productName, forHTTPHeaderField: "X-Plex-Product")
+        request.setValue(clientVersion, forHTTPHeaderField: "X-Plex-Version")
+        request.setValue(platformName, forHTTPHeaderField: "X-Plex-Platform")
+        request.setValue(deviceModel, forHTTPHeaderField: "X-Plex-Device")
+        request.setValue(deviceDisplayName, forHTTPHeaderField: "X-Plex-Device-Name")
+        request.setValue(clientIdentifierValue, forHTTPHeaderField: "X-Plex-Client-Identifier")
+
+        let start = Date()
+        do {
+            let (_, response) = try await URLSession.shared.data(for: request)
+            let elapsed = Int(Date().timeIntervalSince(start) * 1000)
+            guard let httpResponse = response as? HTTPURLResponse else {
+                AppLoggers.net.error("event=net.transcodeValidate.invalidResponse elapsedMs=\(elapsed)")
+                throw StreamResolutionError.transcodeRejected(status: -1)
+            }
+
+            AppLoggers.net.info(
+                "event=net.transcodeValidate status=\(httpResponse.statusCode) elapsedMs=\(elapsed)"
+            )
+
+            guard (200...299).contains(httpResponse.statusCode) else {
+                throw StreamResolutionError.transcodeRejected(status: httpResponse.statusCode)
+            }
+        } catch let error as StreamResolutionError {
+            throw error
+        } catch {
+            AppLoggers.net.error(
+                "event=net.transcodeValidate.failed error=\(String(describing: error), privacy: .public)"
+            )
+            throw StreamResolutionError.transcodeRejected(status: -1)
+        }
+    }
+
     private func buildStreamPlan(
         metadata: MetadataResponse.Metadata,
         baseURL: URL,
@@ -1663,10 +1733,17 @@ final class PlexService: ObservableObject {
         let decision = evaluateDirectSupport(for: media)
         let directURL = directPlayURL(partKey: partKey, token: token, baseURL: baseURL)
 
+        #if targetEnvironment(simulator)
+        // Historically simulator handled some MKV assets via direct play; allow direct probe first.
+        let allowDirectForContainer = true
+        #else
+        let allowDirectForContainer = !isMKV
+        #endif
+
         let shouldAttemptDirect = options.preferDirect &&
             !options.forceTranscode &&
             !options.forceRemux &&
-            !isMKV
+            allowDirectForContainer
 
         if shouldAttemptDirect, decision.supported, let directURL {
             var appliedOptions = options
@@ -1699,9 +1776,9 @@ final class PlexService: ObservableObject {
         let hlsOptions = HLSRequestOptions(
             directStream: remux,
             directPlay: false,
-            maxVideoBitrate: maxBitrate,
-            videoCodec: remux ? "copy" : "h264",
-            audioCodec: remux ? "copy" : "aac",
+            maxVideoBitrate: remux ? nil : (options.relaxedTranscodeParams ? nil : maxBitrate),
+            videoCodec: remux ? "copy" : (options.relaxedTranscodeParams ? nil : "h264"),
+            audioCodec: remux ? "copy" : (options.relaxedTranscodeParams ? nil : "aac"),
             forceNewSession: options.forceNewSession
         )
 
@@ -1830,6 +1907,7 @@ final class PlexService: ObservableObject {
         case missingMediaParts
         case decoding(Error)
         case http(status: Int)
+        case transcodeRejected(status: Int)
     }
 
     private struct MetadataResponse: Decodable {

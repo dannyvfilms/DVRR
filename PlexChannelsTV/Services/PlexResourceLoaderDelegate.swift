@@ -12,6 +12,8 @@ import Foundation
 /// This ensures sessions appear in app.plex.tv and Plex Dash
 final class PlexResourceLoaderDelegate: NSObject, AVAssetResourceLoaderDelegate {
     private static let interceptedScheme = "plexhls"
+    private let taskQueue = DispatchQueue(label: "PlexResourceLoaderDelegate.tasks")
+    private var activeTasks: [ObjectIdentifier: URLSessionDataTask] = [:]
     private let sessionID: String?
     private let token: String
     private let clientIdentifier: String
@@ -43,11 +45,14 @@ final class PlexResourceLoaderDelegate: NSObject, AVAssetResourceLoaderDelegate 
     }
 
     static func resourceLoaderURL(for url: URL) -> URL {
-        guard var components = URLComponents(url: url, resolvingAgainstBaseURL: false) else {
-            return url
+        let absolute = url.absoluteString
+        if absolute.hasPrefix("https://") {
+            return URL(string: interceptedScheme + "://" + absolute.dropFirst("https://".count)) ?? url
         }
-        components.scheme = interceptedScheme
-        return components.url ?? url
+        if absolute.hasPrefix("http://") {
+            return URL(string: interceptedScheme + "://" + absolute.dropFirst("http://".count)) ?? url
+        }
+        return url
     }
     
     func resourceLoader(
@@ -67,12 +72,12 @@ final class PlexResourceLoaderDelegate: NSObject, AVAssetResourceLoaderDelegate 
         }
 
         let requestURL: URL = {
-            guard scheme == Self.interceptedScheme,
-                  var components = URLComponents(url: url, resolvingAgainstBaseURL: false) else {
-                return url
+            guard scheme == Self.interceptedScheme else { return url }
+            let absolute = url.absoluteString
+            if absolute.hasPrefix(Self.interceptedScheme + "://") {
+                return URL(string: "https://" + absolute.dropFirst((Self.interceptedScheme + "://").count)) ?? url
             }
-            components.scheme = "https"
-            return components.url ?? url
+            return url
         }()
         
         // Log when resource loader intercepts a request (for debugging)
@@ -85,11 +90,10 @@ final class PlexResourceLoaderDelegate: NSObject, AVAssetResourceLoaderDelegate 
             return handleRedirect(loadingRequest: loadingRequest, redirectRequest: redirect)
         }
         
-        // Create a new mutable request from the existing request
+        // Create a clean GET request to avoid forwarding loader-specific headers that
+        // can make Plex treat the HLS startup request as malformed.
         var originalRequest = URLRequest(url: requestURL)
-        originalRequest.httpMethod = loadingRequest.request.httpMethod
-        originalRequest.allHTTPHeaderFields = loadingRequest.request.allHTTPHeaderFields
-        originalRequest.httpBody = loadingRequest.request.httpBody
+        originalRequest.httpMethod = "GET"
         
         // Add Plex headers (merge with existing headers)
         originalRequest.setValue(token, forHTTPHeaderField: "X-Plex-Token")
@@ -105,20 +109,25 @@ final class PlexResourceLoaderDelegate: NSObject, AVAssetResourceLoaderDelegate 
             originalRequest.setValue(sessionID, forHTTPHeaderField: "X-Plex-Session-Identifier")
         }
         
-        // Handle byte range requests
-        if let dataRequest = loadingRequest.dataRequest {
-            let requestedOffset = dataRequest.requestedOffset
-            let requestedLength = dataRequest.requestedLength
-            
-            if requestedOffset > 0 || requestedLength > 0 {
-                let rangeHeader = "bytes=\(requestedOffset)-\(requestedOffset + Int64(requestedLength) - 1)"
-                originalRequest.setValue(rangeHeader, forHTTPHeaderField: "Range")
+        let isStartupRequest = requestURL.path.contains("/video/:/transcode/universal/start.m3u8")
+        if !isStartupRequest, let dataRequest = loadingRequest.dataRequest {
+            let baseOffset = max(dataRequest.currentOffset, dataRequest.requestedOffset)
+            if baseOffset >= 0 {
+                if dataRequest.requestsAllDataToEndOfResource {
+                    originalRequest.setValue("bytes=\(baseOffset)-", forHTTPHeaderField: "Range")
+                } else if dataRequest.requestedLength > 0 {
+                    let endOffset = baseOffset + Int64(dataRequest.requestedLength) - 1
+                    originalRequest.setValue("bytes=\(baseOffset)-\(endOffset)", forHTTPHeaderField: "Range")
+                }
             }
         }
         
         // Perform the request
-        let task = URLSession.shared.dataTask(with: originalRequest) { [weak loadingRequest] data, response, error in
-            guard let loadingRequest = loadingRequest else { return }
+        let taskID = ObjectIdentifier(loadingRequest)
+        let task = URLSession.shared.dataTask(with: originalRequest) { data, response, error in
+            self.taskQueue.async {
+                self.activeTasks.removeValue(forKey: taskID)
+            }
             
             if let error {
                 if requestURL.path.contains("transcode") || requestURL.path.contains("m3u8") {
@@ -134,8 +143,25 @@ final class PlexResourceLoaderDelegate: NSObject, AVAssetResourceLoaderDelegate 
                 return
             }
 
-            if requestURL.path.contains("transcode") || requestURL.path.contains("m3u8") {
-                print("[PlexResourceLoader] Response status=\(response.statusCode) path=\(requestURL.path) bytes=\(data.count)")
+            let isTranscodeRequest = requestURL.path.contains("transcode") || requestURL.path.contains("m3u8")
+            if isTranscodeRequest {
+                print("[PlexResourceLoader] Response status=\(response.statusCode) path=\(requestURL.path) bytes=\(data.count) url=\(requestURL.absoluteString)")
+            }
+
+            guard (200..<300).contains(response.statusCode) || response.statusCode == 206 else {
+                if isTranscodeRequest {
+                    let body = String(data: data, encoding: .utf8) ?? "<non-utf8>"
+                    print("[PlexResourceLoader] Non-2xx status=\(response.statusCode) path=\(requestURL.path) body=\(body)")
+                }
+                let nsError = NSError(
+                    domain: NSURLErrorDomain,
+                    code: NSURLErrorBadServerResponse,
+                    userInfo: [
+                        NSLocalizedDescriptionKey: "HTTP \(response.statusCode) for \(requestURL.path)"
+                    ]
+                )
+                loadingRequest.finishLoading(with: nsError)
+                return
             }
             
             // Set content information first (if available)
@@ -153,7 +179,10 @@ final class PlexResourceLoaderDelegate: NSObject, AVAssetResourceLoaderDelegate 
             loadingRequest.response = response
             loadingRequest.finishLoading()
         }
-        
+
+        taskQueue.async {
+            self.activeTasks[taskID] = task
+        }
         task.resume()
         return true
     }
@@ -164,6 +193,18 @@ final class PlexResourceLoaderDelegate: NSObject, AVAssetResourceLoaderDelegate 
     ) -> Bool {
         // Handle authentication challenges if needed
         return false
+    }
+
+    func resourceLoader(
+        _ resourceLoader: AVAssetResourceLoader,
+        didCancel loadingRequest: AVAssetResourceLoadingRequest
+    ) {
+        let taskID = ObjectIdentifier(loadingRequest)
+        taskQueue.async {
+            if let task = self.activeTasks.removeValue(forKey: taskID) {
+                task.cancel()
+            }
+        }
     }
     
     private func handleRedirect(loadingRequest: AVAssetResourceLoadingRequest, redirectRequest: URLRequest) -> Bool {

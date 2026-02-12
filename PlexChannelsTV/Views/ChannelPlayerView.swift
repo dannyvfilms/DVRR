@@ -28,6 +28,8 @@ struct ChannelPlayerView: View {
     @State private var playbackError: String?
     @State private var isLoading = false
     @State private var hasAttemptedFallback = false
+    @State private var hasAttemptedRelaxedTranscodeFallback = false
+    @State private var hasAttemptedRemuxFallback = false
     @State private var pendingSeek: TimeInterval?
     @State private var ticker: Timer?
     @State private var currentTime: CMTime = .zero
@@ -37,6 +39,8 @@ struct ChannelPlayerView: View {
     @State private var hasLoggedSegmentStart = false
     @State private var resourceLoaderDelegate: PlexResourceLoaderDelegate?  // Retain the delegate
     @State private var lastSessionUpdate: Date?  // Track last session progress update
+    @State private var sessionUpdateInFlight = false
+    @State private var directPlayRejectedItemIDs: Set<String> = []
 
     var body: some View {
         ZStack(alignment: .bottomLeading) {
@@ -148,7 +152,7 @@ private extension ChannelPlayerView {
                 let plan = try await service.streamURLForItem(
                     itemID: entry.media.id,
                     startAtSec: entry.offset,
-                    options: options
+                    options: effectiveRequestOptions(options, for: entry)
                 )
 
                 await MainActor.run {
@@ -171,7 +175,9 @@ private extension ChannelPlayerView {
         isLoading = false
 
         if resetFallback {
-            hasAttemptedFallback = plan.mode != .direct
+            hasAttemptedFallback = false
+            hasAttemptedRelaxedTranscodeFallback = false
+            hasAttemptedRemuxFallback = false
         }
 
         let refreshedChannel = latestChannel(with: entry.channel.id) ?? entry.channel
@@ -192,6 +198,7 @@ private extension ChannelPlayerView {
         hasLoggedSegmentStart = false
         isRecovering = false
         lastSessionUpdate = nil  // Reset session update tracker
+        sessionUpdateInFlight = false
         
         // For HLS transcoding, wait for timeline API call and a brief startup delay before loading.
         // The transcoder session can take a moment to become ready, especially on first item start.
@@ -226,13 +233,26 @@ private extension ChannelPlayerView {
         }
     }
 
+    func effectiveRequestOptions(_ options: PlexService.StreamRequestOptions, for entry: PlaybackEntry) -> PlexService.StreamRequestOptions {
+        guard directPlayRejectedItemIDs.contains(entry.media.id) else { return options }
+        var adjusted = options
+        adjusted.preferDirect = false
+        return adjusted
+    }
+
     func replacePlayerItem(with plan: PlexService.StreamPlan, entry: PlaybackEntry) {
         clearPlayerObservers()
 
+        #if targetEnvironment(simulator)
+        // The simulator has been consistently failing decode on HLS with custom resource loading.
+        // Use native AVURLAsset loading in simulator to avoid resource-loader side effects.
+        let asset = AVURLAsset(url: plan.url)
+        resourceLoaderDelegate = nil
+        #else
         // Route HLS through a custom scheme so AVFoundation consistently uses our resource loader.
         let assetURL = resourceLoaderURL(for: plan)
         let asset = AVURLAsset(url: assetURL)
-        
+
         // Create and retain resource loader delegate with Plex headers.
         // AVAssetResourceLoader only keeps a weak reference, so we must retain it.
         if let session = plexService.session {
@@ -252,10 +272,15 @@ private extension ChannelPlayerView {
         } else {
             resourceLoaderDelegate = nil
         }
+        #endif
         
         let item = AVPlayerItem(asset: asset)
-        // Increased buffer from 3s to 12s for smoother playback with less stalls
+        // Increase forward buffer to trade startup speed for fewer simulator stalls.
+        #if targetEnvironment(simulator)
+        item.preferredForwardBufferDuration = 24
+        #else
         item.preferredForwardBufferDuration = 12
+        #endif
         player.replaceCurrentItem(with: item)
         configurePlayer(for: plan, entry: entry, item: item)
         configureObservers(for: item, entry: entry, plan: plan)
@@ -429,6 +454,7 @@ private extension ChannelPlayerView {
     @MainActor
     func handlePlaybackFailure(for entry: PlaybackEntry, plan: PlexService.StreamPlan, error: Error?) {
         let nsError = (error as NSError?) ?? NSError(domain: "Playback", code: -1)
+        let errorDomain = nsError.domain
         let errorCode = nsError.code
         let isHLSStartupAvailabilityError =
             errorCode == -1100 || errorCode == NSURLErrorResourceUnavailable
@@ -446,8 +472,107 @@ private extension ChannelPlayerView {
                 try? await Task.sleep(nanoseconds: 1_000_000_000) // 1 second delay
                 
                 var options = plan.request
+                #if targetEnvironment(simulator)
+                options.forceNewSession = false
+                #else
                 options.forceNewSession = true  // Force new transcoder session
+                #endif
                 startPlayback(for: entry, options: options, fallbackFrom: plan, fallbackReason: "hls_resource_unavailable")
+            }
+            return
+        }
+
+        // Some streams can return an initial HLS payload that decodes poorly on first attempt
+        // (CoreMediaErrorDomain -12881). Retry once with a fresh session and lower capped bitrate.
+        if plan.mode == .hls,
+           errorDomain == "CoreMediaErrorDomain",
+           errorCode == -12881,
+           !hasAttemptedFallback {
+            hasAttemptedFallback = true
+            AppLoggers.playback.warning(
+                "event=play.retry itemID=\(entry.media.id, privacy: .public) reason=coremedia_decode_error errorCode=\(errorCode)"
+            )
+
+            Task { @MainActor in
+                if let staleSessionID = plan.sessionID {
+                    await plexService.stopPlaybackSession(
+                        sessionID: staleSessionID,
+                        itemID: entry.media.id,
+                        offset: entry.offset
+                    )
+                }
+                var options = plan.request
+                options.preferDirect = false
+                options.forceTranscode = true
+                options.forceRemux = false
+                options.forceNewSession = true
+                options.preferredMaxBitrate = min(options.preferredMaxBitrate ?? 8_000, 6_000)
+                startPlayback(for: entry, options: options, fallbackFrom: plan, fallbackReason: "coremedia_decode_error")
+            }
+            return
+        }
+
+        // Some Plex servers return 400 for strict transcode query variants on a recovery attempt.
+        // Retry once with relaxed transcode params (no explicit codec/bitrate hints).
+        if plan.mode == .hls,
+           errorDomain == NSURLErrorDomain,
+           errorCode == NSURLErrorBadServerResponse,
+           plan.request.forceNewSession,
+           !hasAttemptedRelaxedTranscodeFallback {
+            hasAttemptedRelaxedTranscodeFallback = true
+            AppLoggers.playback.warning(
+                "event=play.retry itemID=\(entry.media.id, privacy: .public) reason=hls_start_bad_request_relaxed_transcode errorCode=\(errorCode)"
+            )
+
+            Task { @MainActor in
+                if let staleSessionID = plan.sessionID {
+                    await plexService.stopPlaybackSession(
+                        sessionID: staleSessionID,
+                        itemID: entry.media.id,
+                        offset: entry.offset
+                    )
+                }
+                var options = plan.request
+                options.preferDirect = false
+                options.forceTranscode = true
+                options.forceRemux = false
+                options.forceNewSession = true
+                options.relaxedTranscodeParams = true
+                options.preferredMaxBitrate = nil
+                startPlayback(for: entry, options: options, fallbackFrom: plan, fallbackReason: "hls_start_bad_request_relaxed_transcode")
+            }
+            return
+        }
+
+        // If strict and relaxed transcode startup are both rejected (HTTP 400),
+        // attempt a remux fallback (copy streams) with a fresh session.
+        if plan.mode == .hls,
+           errorDomain == NSURLErrorDomain,
+           errorCode == NSURLErrorBadServerResponse,
+           plan.request.forceNewSession,
+           plan.request.relaxedTranscodeParams,
+           !hasAttemptedRemuxFallback {
+            hasAttemptedRemuxFallback = true
+            AppLoggers.playback.warning(
+                "event=play.retry itemID=\(entry.media.id, privacy: .public) reason=hls_start_bad_request_force_remux errorCode=\(errorCode)"
+            )
+
+            Task { @MainActor in
+                if let staleSessionID = plan.sessionID {
+                    await plexService.stopPlaybackSession(
+                        sessionID: staleSessionID,
+                        itemID: entry.media.id,
+                        offset: entry.offset
+                    )
+                }
+                var options = plan.request
+                options.preferDirect = false
+                options.forceTranscode = false
+                options.forceRemux = true
+                options.forceNewSession = true
+                options.relaxedTranscodeParams = false
+                options.preferredMaxBitrate = nil
+                startPlayback(for: entry, options: options, fallbackFrom: plan, fallbackReason: "hls_start_bad_request_force_remux")
             }
             return
         }
@@ -455,6 +580,13 @@ private extension ChannelPlayerView {
         if plan.mode == .direct && !hasAttemptedFallback {
             hasAttemptedFallback = true
             let reason = (error as NSError?)?.localizedDescription ?? "direct_failed"
+            if errorDomain == AVFoundationErrorDomain,
+               errorCode == -11828 {
+                directPlayRejectedItemIDs.insert(entry.media.id)
+                AppLoggers.playback.info(
+                    "event=play.directDisabled itemID=\(entry.media.id, privacy: .public) reason=cannot_open"
+                )
+            }
             var options = PlexService.StreamRequestOptions()
             options.preferDirect = false
             options.preferredMaxBitrate = max(adaptiveState.bitrateCap, 8_000)
@@ -505,6 +637,8 @@ private extension ChannelPlayerView {
             "event=play.autoNext channelID=\(nextEntry.channel.id.uuidString, privacy: .public) nextItemID=\(nextEntry.media.id, privacy: .public)"
         )
         hasAttemptedFallback = false
+        hasAttemptedRelaxedTranscodeFallback = false
+        hasAttemptedRemuxFallback = false
         startPlayback(for: nextEntry)
     }
 }
@@ -538,14 +672,21 @@ private extension ChannelPlayerView {
         AppLoggers.playback.error(
             "event=play.errorLog itemID=\(entry.media.id, privacy: .public) domain=\(domain, privacy: .public) status=\(event.errorStatusCode)"
         )
+        #if !targetEnvironment(simulator)
         if plan.mode == .hls, domain == "CoreMediaErrorDomain", event.errorStatusCode == -16830 {
             attemptRecovery(for: plan, entry: entry, cause: .stall)
         }
+        #endif
     }
 
     @MainActor
     func handlePlaybackStall(entry: PlaybackEntry, plan: PlexService.StreamPlan) {
+        #if targetEnvironment(simulator)
+        // Avoid aggressive restart loops on simulator; let AVPlayer attempt to recover in-place.
+        return
+        #else
         attemptRecovery(for: plan, entry: entry, cause: .stall)
+        #endif
     }
 
     @MainActor
@@ -585,6 +726,9 @@ private extension ChannelPlayerView {
 
     @MainActor
     func evaluateThroughput(observedKbps: Int, indicatedKbps: Int, plan: PlexService.StreamPlan, entry: PlaybackEntry) {
+        #if targetEnvironment(simulator)
+        return
+        #endif
         guard plan.mode == .hls else { return }
         guard indicatedKbps > 0 else {
             adaptiveState.lowThroughputStart = nil
@@ -699,6 +843,7 @@ private extension ChannelPlayerView {
             }
         }
 
+        stopTicker()
         player.pause()
         let currentSeconds = player.currentTime().seconds
         
@@ -724,6 +869,8 @@ private extension ChannelPlayerView {
 private extension ChannelPlayerView {
     func handlePlaybackError(_ error: Error, entry: PlaybackEntry) {
         stopTicker()
+        isLoading = false
+        isRecovering = false
 
         let nsError = error as NSError
         playbackError = nsError.localizedDescription
@@ -809,7 +956,10 @@ private extension ChannelPlayerView {
             let now = Date()
             if let context = playbackContext,
                let sessionID = context.plan.sessionID,
+               !sessionUpdateInFlight,
                lastSessionUpdate == nil || now.timeIntervalSince(lastSessionUpdate!) >= 30 {
+                sessionUpdateInFlight = true
+                lastSessionUpdate = now
                 Task { @MainActor in
                     let elapsed = elapsedSeconds(for: context)
                     await plexService.updatePlaybackSession(
@@ -818,7 +968,7 @@ private extension ChannelPlayerView {
                         offset: elapsed,
                         duration: context.entry.media.duration
                     )
-                    lastSessionUpdate = now
+                    sessionUpdateInFlight = false
                 }
             }
         }
@@ -831,8 +981,17 @@ private extension ChannelPlayerView {
 
     func elapsedSeconds(for context: PlaybackContext) -> TimeInterval {
         let base = max(0, context.entry.offset)
-        let delta = max(0, currentTime.seconds)
-        return base + delta
+        let current = max(0, currentTime.seconds)
+
+        // HLS on simulator often reports absolute playback time (already includes offset).
+        if context.plan.mode == .hls {
+            if current >= max(1, base - 2) {
+                return min(current, context.entry.media.duration)
+            }
+            return min(base + current, context.entry.media.duration)
+        }
+
+        return min(base + current, context.entry.media.duration)
     }
 }
 

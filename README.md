@@ -3,6 +3,8 @@
 Native `tvOS 17+` SwiftUI app that turns Plex libraries into always-on "live TV" channels.  
 Channels are computed client-side with deterministic schedule offsets, so no backend is required.
 
+MVP demo recording: https://youtu.be/FkOh5230XSM
+
 ## Feature Summary
 
 ### Authentication and Session

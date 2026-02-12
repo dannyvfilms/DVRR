@@ -73,16 +73,13 @@ final class AuthState: ObservableObject {
     }
 
     func prepareForLinking() {
-        if plexService.session == nil {
-            isLinked = false
-            linkService.setLinked(false)
-        }
+        // Always reset link state before requesting a new PIN code.
+        // This avoids stale "already linked" flags after transient session failures.
+        isLinked = false
+        linkService.setLinked(false)
     }
 
     func pollPin(id: Int, until deadline: Date) async throws -> String {
-        if isLinked, session != nil {
-            throw LinkError.alreadyLinked
-        }
         return try await linkService.pollPin(id: id, until: deadline)
     }
 

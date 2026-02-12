@@ -116,10 +116,6 @@ struct LinkLoginView: View {
         authState.prepareForLinking()
         authState.linkingError = nil
 
-        guard !authState.isLinked else {
-            return
-        }
-
         isRequesting = true
 
         Task {
