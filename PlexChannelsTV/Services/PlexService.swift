@@ -33,10 +33,11 @@ final class PlexService: ObservableObject {
 
     struct StreamRequestOptions {
         var preferDirect: Bool = true
-        var preferredMaxBitrate: Int = 8_000  // Reduced from 10Mbps for better stability
+        var preferredMaxBitrate: Int? = 8_000  // nil = no limit (for remuxing), default 8Mbps for transcoding
         var forceTranscode: Bool = false
         var forceRemux: Bool = false
         var forceNewSession: Bool = false  // Force new transcoder session (for recovery)
+        var skipRemuxForMKV: Bool = false  // Skip remuxing MKV containers and go straight to transcode (faster, more reliable)
     }
 
     struct StreamPlan {
@@ -897,13 +898,26 @@ final class PlexService: ObservableObject {
                         token: tokenCandidate.token,
                         tokenType: tokenCandidate.type
                     )
+                    
+                    // Smart detection: If MKV container, default to transcoding for faster/more reliable starts
+                    // Remuxing can be slower and less reliable due to network/server issues
+                    var adjustedOptions = options
+                    if let media = metadata.media.first,
+                       let container = (media.parts.first?.container ?? media.container)?.lowercased(),
+                       container == "mkv",
+                       !options.forceRemux,
+                       !options.forceTranscode {
+                        // Skip remux for MKV - go straight to transcoding for better reliability
+                        adjustedOptions.skipRemuxForMKV = true
+                    }
+                    
                     let plan = try buildStreamPlan(
                         metadata: metadata,
                         baseURL: baseURL,
                         token: tokenCandidate.token,
                         tokenType: tokenCandidate.type,
                         offset: offset,
-                        options: options
+                        options: adjustedOptions
                     )
 
                     if index != 0 {
@@ -1675,10 +1689,13 @@ final class PlexService: ObservableObject {
             )
         }
 
-        let remux = (options.forceRemux || isMKV) && !options.forceTranscode
+        // For MKV, optionally skip remuxing and go straight to transcoding (more reliable, faster start)
+        // Remuxing can be unreliable due to network/server issues, transcoding is more consistent
+        let shouldRemux = (options.forceRemux || (isMKV && !options.skipRemuxForMKV)) && !options.forceTranscode
+        let remux = shouldRemux
         // When remuxing (copying streams), don't limit bitrate - copy original quality
         // Only limit bitrate when actually transcoding
-        let maxBitrate = remux ? nil : max(1_000, options.preferredMaxBitrate)
+        let maxBitrate = remux ? nil : (options.preferredMaxBitrate.map { max(1_000, $0) } ?? nil)
         let hlsOptions = HLSRequestOptions(
             directStream: remux,
             directPlay: false,
@@ -1702,6 +1719,8 @@ final class PlexService: ObservableObject {
         } else if remux {
             let detail = container.isEmpty ? "unknown" : container
             fallbackReason = "force_remux:container=\(detail)"
+        } else if isMKV && options.skipRemuxForMKV {
+            fallbackReason = "skip_remux_mkv:container=mkv"
         } else if !options.preferDirect {
             fallbackReason = "prefer_transcode"
         } else if !decision.supported {

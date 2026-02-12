@@ -29,7 +29,6 @@ struct ChannelBuilderFlowView: View {
         plexService: PlexService,
         channelStore: ChannelStore,
         libraries: [PlexLibrary],
-        existingChannel: Channel? = nil,
         onComplete: @escaping (Channel) -> Void,
         onCancel: @escaping () -> Void
     ) {
@@ -37,8 +36,7 @@ struct ChannelBuilderFlowView: View {
         _viewModel = StateObject(wrappedValue: ChannelBuilderViewModel(
             plexService: plexService,
             channelStore: channelStore,
-            libraries: libraries,
-            existingChannel: existingChannel
+            libraries: libraries
         ))
         self.onComplete = onComplete
         self.onCancel = onCancel
@@ -52,14 +50,8 @@ struct ChannelBuilderFlowView: View {
             .onChange(of: viewModel.step) { _, newStep in
                 handleStepChange(newStep)
             }
-            .onChange(of: viewModel.previewUpdateTrigger) { _, _ in
-                handlePreviewUpdate()
-            }
-            .onChange(of: viewModel.draft.sort) { _, _ in
-                handleSortOrOptionChange()
-            }
-            .onChange(of: viewModel.draft.options.shuffle) { _, _ in
-                handleSortOrOptionChange()
+            .onChange(of: viewModel.draft.perLibrarySpecs) { _, _ in
+                handleSpecChange()
             }
     }
     
@@ -69,8 +61,7 @@ struct ChannelBuilderFlowView: View {
                 VStack(alignment: .leading, spacing: 32) {
                     content
                         .focusSectionIfAvailable()
-                    Spacer(minLength: previewSpacerLength)
-
+                    
                     previewRow
                     
                     Spacer(minLength: 20)
@@ -89,32 +80,26 @@ struct ChannelBuilderFlowView: View {
     
     @ViewBuilder
     private var previewRow: some View {
-        if case .rules(let index) = viewModel.step,
+        if case .rules(let index) = viewModel.step, 
            viewModel.selectedLibraryRefs.indices.contains(index) {
             let ref = viewModel.selectedLibraryRefs[index]
-            if let library = viewModel.library(for: ref.id) {
-                let sortBinding = Binding(
-                    get: { viewModel.draft.sort },
-                    set: { viewModel.draft.sort = $0 }
-                )
-                let shuffleBinding = Binding(
-                    get: { viewModel.draft.options.shuffle },
-                    set: { viewModel.draft.options.shuffle = $0 }
-                )
-                ChannelPreviewRow(
-                    previewMedia: previewMedia,
-                    plexService: plexService,
-                    countState: viewModel.counts[ref.id],
-                    availableSortKeys: viewModel.sortCatalog.availableSorts(for: library),
-                    mediaType: library.type,
-                    sortDescriptor: sortBinding,
-                    shuffleEnabled: shuffleBinding,
-                    channelName: $viewModel.draft.name,
-                    onRefreshLibrary: {
-                        viewModel.refreshLibraryCache(for: ref.id)
-                    }
-                )
-            }
+            ChannelPreviewRow(
+                previewMedia: previewMedia,
+                plexService: plexService,
+                countState: viewModel.counts[ref.id]
+            )
+        } else if case .sort = viewModel.step {
+            let totalCount = viewModel.counts.values.compactMap { $0.total }.reduce(0, +)
+            let combinedState = ChannelBuilderViewModel.CountState(
+                isLoading: false,
+                total: totalCount, 
+                approximate: false
+            )
+            ChannelPreviewRow(
+                previewMedia: previewMedia,
+                plexService: plexService,
+                countState: combinedState
+            )
         }
     }
     
@@ -134,19 +119,15 @@ struct ChannelBuilderFlowView: View {
     private func handleStepChange(_ newStep: ChannelBuilderViewModel.Step) {
         if case .rules = newStep {
             fetchPreviewMedia()
-        } else {
-            previewMedia = []
-        }
-    }
-    
-    private func handlePreviewUpdate() {
-        if case .rules = viewModel.step {
+        } else if case .sort = newStep {
             fetchPreviewMedia()
         }
     }
-
-    private func handleSortOrOptionChange() {
+    
+    private func handleSpecChange() {
         if case .rules = viewModel.step {
+            fetchPreviewMedia()
+        } else if case .sort = viewModel.step {
             fetchPreviewMedia()
         }
     }
@@ -165,6 +146,8 @@ struct ChannelBuilderFlowView: View {
             librariesStep
         case .rules(let index):
             rulesStep(index: index)
+        case .sort, .review:
+            sortAndReviewStep
         }
     }
 
@@ -184,7 +167,6 @@ struct ChannelBuilderFlowView: View {
                 LibraryMultiPickerView(
                     libraries: viewModel.allLibraries,
                     selectedIDs: selectedIDs,
-                    cacheStore: viewModel.cacheStore,
                     onToggle: viewModel.toggleLibrary
                 )
                 .onChange(of: viewModel.selectedLibraryRefs.count) { oldCount, newCount in
@@ -209,8 +191,7 @@ struct ChannelBuilderFlowView: View {
                         availableFields: viewModel.availableFields(for: library),
                         filterCatalog: viewModel.filterCatalog,
                         countState: viewModel.counts[ref.id],
-                        onSpecChange: viewModel.updateSpec,
-                        onMenuStateChange: viewModel.setMenuOpen
+                        onSpecChange: viewModel.updateSpec
                     )
                 }
             } else {
@@ -219,6 +200,24 @@ struct ChannelBuilderFlowView: View {
         } else {
             Text("Select at least one library to continue.")
                 .foregroundStyle(.secondary)
+        }
+    }
+
+    private var sortAndReviewStep: some View {
+        VStack(alignment: .leading, spacing: 24) {
+            if let first = viewModel.selectedLibraryRefs.first, let library = viewModel.library(for: first.id) {
+                SortPickerView(
+                    descriptor: $viewModel.draft.sort,
+                    draft: $viewModel.draft,
+                    availableKeys: viewModel.sortCatalog.availableSorts(for: library),
+                    libraries: viewModel.selectedLibraryRefs,
+                    counts: viewModel.counts,
+                    totalItems: viewModel.totalItemCountEstimate()
+                )
+            } else {
+                Text("Sort options will appear once a library is selected.")
+                    .foregroundStyle(.secondary)
+            }
         }
     }
 
@@ -257,11 +256,42 @@ struct ChannelBuilderFlowView: View {
                         AppLoggers.channel.info("event=builder.next.update oldCount=\(oldValue) newCount=\(newValue) isDisabled=\(newValue == 0)")
                     }
 
-                case .rules(let index):
+                case .rules:
                     Button("Back") {
-                        viewModel.goBack(from: .rules(index: index))
+                        switch viewModel.step {
+                        case .rules(let index):
+                            viewModel.goBack(from: .rules(index: index))
+                        default:
+                            break
+                        }
                     }
                     .buttonStyle(.bordered)
+                    .focused($focusedButton, equals: .back)
+
+                    Button("Next") {
+                        switch viewModel.step {
+                        case .rules(let index):
+                            viewModel.goToNextRulesStep(currentIndex: index)
+                        default:
+                            break
+                        }
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .focused($focusedButton, equals: .next)
+
+                case .sort, .review:
+                    Button("Back") {
+                        switch viewModel.step {
+                        case .sort:
+                            viewModel.goBack(from: .sort)
+                        case .review:
+                            viewModel.goBack(from: .review)
+                        default:
+                            break
+                        }
+                    }
+                    .buttonStyle(.bordered)
+                    .disabled(isCreating)
                     .focused($focusedButton, equals: .back)
 
                     if isCreating {
@@ -269,29 +299,14 @@ struct ChannelBuilderFlowView: View {
                             .progressViewStyle(.circular)
                             .frame(height: 44)
                     } else {
-                        let isLast = index >= viewModel.selectedLibraryRefs.count - 1
-                        let buttonText: String = {
-                            if isLast {
-                                return viewModel.isEditing ? "Update Channel" : "Create Channel"
-                            }
-                            return "Next"
-                        }()
-                        Button(buttonText) {
-                            if isLast {
-                                Task {
-                                    await createChannel()
-                                }
-                            } else {
-                                AppLoggers.channel.info("event=builder.next.tap step=rules index=\(index)")
-                                _ = viewModel.goToNextRulesStep(currentIndex: index)
+                        Button("Create Channel") {
+                            Task {
+                                await createChannel()
                             }
                         }
                         .buttonStyle(.borderedProminent)
-                        .disabled(isLast && viewModel.draft.selectedLibraries.isEmpty)
-                        .focused($focusedButton, equals: isLast ? .create : .next)
-                        .onAppear {
-                            focusedButton = isLast ? .create : .next
-                        }
+                        .disabled(viewModel.draft.selectedLibraries.isEmpty)
+                        .focused($focusedButton, equals: .create)
                     }
                 }
             }
@@ -380,23 +395,12 @@ struct ChannelBuilderFlowView: View {
             let trimmedName = draft.name.trimmingCharacters(in: .whitespacesAndNewlines)
             let finalName = trimmedName.isEmpty ? defaultName(for: primaryType) : trimmedName
 
-            let isEditing = viewModel.isEditing
-            let finalChannelID = isEditing ? viewModel.existingChannelID! : channelID
-            
-            // Preserve scheduleAnchor when editing
-            let preservedScheduleAnchor: Date = {
-                if isEditing, let existingChannel = viewModel.channelStore.channels.first(where: { $0.id == finalChannelID }) {
-                    return existingChannel.scheduleAnchor
-                }
-                return Date()
-            }()
-            
             let channel = Channel(
-                id: finalChannelID,
+                id: channelID,
                 name: finalName,
                 libraryKey: primaryKey,
                 libraryType: primaryType,
-                scheduleAnchor: preservedScheduleAnchor,
+                scheduleAnchor: Date(),
                 items: finalMedia,
                 sourceLibraries: sources,
                 options: Channel.Options(shuffle: draft.options.shuffle),
@@ -406,41 +410,20 @@ struct ChannelBuilderFlowView: View {
             let elapsed = Int(Date().timeIntervalSince(startTime) * 1000)
             let countsSummary = perLibraryCounts.map { "\($0.key):\($0.value)" }.joined(separator: ",")
             AppLoggers.channel.info(
-                "event=builder.compile.ok perLibCounts=\(countsSummary, privacy: .public) total=\(channel.items.count) elapsedMs=\(elapsed) isEditing=\(isEditing)"
+                "event=builder.compile.ok perLibCounts=\(countsSummary, privacy: .public) total=\(channel.items.count) elapsedMs=\(elapsed)"
             )
 
-            if isEditing {
-                // Update existing channel - remove old one first
-                if let existingChannel = viewModel.channelStore.channels.first(where: { $0.id == finalChannelID }) {
-                    viewModel.channelStore.removeChannel(existingChannel)
-                }
-                // Add updated channel using addChannel method
-                // Since we removed the old channel first, addChannel should succeed (no name conflict)
-                let added = viewModel.channelStore.addChannel(channel)
-                if !added {
-                    // Name collision with different channel - this shouldn't happen but handle it
-                    viewModel.errorMessage = "Failed to update channel: name conflict."
-                    AppLoggers.channel.error(
-                        "event=builder.update.fail channelID=\(finalChannelID.uuidString, privacy: .public) reason=\"name_conflict\""
-                    )
-                    return
-                }
-                AppLoggers.channel.info(
-                    "event=builder.update.ok channelID=\(channel.id.uuidString, privacy: .public) itemCount=\(channel.items.count)"
+            guard viewModel.channelStore.addChannel(channel) else {
+                viewModel.errorMessage = "A channel with this name already exists."
+                AppLoggers.channel.error(
+                    "event=builder.persist.fail reason=\"duplicate_name\" channelName=\(channel.name, privacy: .public)"
                 )
-            } else {
-                // Create new channel
-                guard viewModel.channelStore.addChannel(channel) else {
-                    viewModel.errorMessage = "A channel with this name already exists."
-                    AppLoggers.channel.error(
-                        "event=builder.persist.fail reason=\"duplicate_name\" channelName=\(channel.name, privacy: .public)"
-                    )
-                    return
-                }
-                AppLoggers.channel.info(
-                    "event=builder.persist.ok channelID=\(channel.id.uuidString, privacy: .public) itemCount=\(channel.items.count)"
-                )
+                return
             }
+
+            AppLoggers.channel.info(
+                "event=builder.persist.ok channelID=\(channel.id.uuidString, privacy: .public) itemCount=\(channel.items.count)"
+            )
 
             onComplete(channel)
         } catch {

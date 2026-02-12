@@ -54,6 +54,7 @@ struct ChannelReorderView: View {
                     .padding(.horizontal, 80)
                     .padding(.bottom, 40)
                 }
+                .scrollClipDisabled(true)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -161,6 +162,7 @@ struct ChannelReorderView: View {
                     .stroke(isFocused ? Color.accentColor : Color.clear, lineWidth: 2)
             )
         }
+        .contentShape(.focusEffect, RoundedRectangle(cornerRadius: 12, style: .continuous))
         .buttonStyle(.plain)
         .focused($focusedIndex, equals: index)
         .onPlayPauseCommand {

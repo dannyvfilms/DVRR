@@ -7,6 +7,7 @@
 
 import SwiftUI
 import AVKit
+import UIKit
 
 struct ChannelPlayerView: View {
     let request: ChannelPlaybackRequest
@@ -70,6 +71,15 @@ struct ChannelPlayerView: View {
         }
         .onAppear { startIfNeeded() }
         .onDisappear { cleanup() }
+        .onReceive(NotificationCenter.default.publisher(for: UIApplication.willResignActiveNotification)) { _ in
+            // Clean up session when app goes to background (e.g., simulator reset)
+            if playbackContext != nil {
+                cleanup()
+            }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: UIApplication.willTerminateNotification)) { _ in
+            cleanup()
+        }
     }
 }
 
@@ -172,6 +182,9 @@ private extension ChannelPlayerView {
             offset: entry.offset
         )
 
+        // Check if we're switching items (existing playback context) vs fresh start
+        let isSwitchingItems = playbackContext != nil
+        
         playbackContext = PlaybackContext(entry: refreshedEntry, plan: plan, startedAt: Date())
         pendingSeek = (plan.mode == .direct && entry.offset > 0) ? entry.offset : nil
         currentTime = .zero
@@ -180,19 +193,40 @@ private extension ChannelPlayerView {
         isRecovering = false
         lastSessionUpdate = nil  // Reset session update tracker
         
-        // Report session start to Plex server so it appears in dashboard
-        if let sessionID = plan.sessionID {
-            Task {
+        // For HLS transcoding, wait for timeline API call to complete before loading player item
+        // This gives the Plex transcoder time to initialize before AVFoundation tries to load the manifest
+        if plan.mode == .hls, let sessionID = plan.sessionID {
+            Task { @MainActor in
                 await plexService.startPlaybackSession(
                     sessionID: sessionID,
                     itemID: entry.media.id,
                     offset: entry.offset,
                     duration: entry.media.duration
                 )
+                
+                // Only delay when switching items - first item can start immediately
+                // Shorter delay (200ms) is sufficient for transcoder initialization after item switch
+                if isSwitchingItems {
+                    try? await Task.sleep(nanoseconds: 200_000_000) // 0.2 seconds for item switches
+                }
+                
+                replacePlayerItem(with: plan, entry: refreshedEntry)
             }
+        } else {
+            // For direct play, start immediately and report session asynchronously
+            if let sessionID = plan.sessionID {
+                Task {
+                    await plexService.startPlaybackSession(
+                        sessionID: sessionID,
+                        itemID: entry.media.id,
+                        offset: entry.offset,
+                        duration: entry.media.duration
+                    )
+                }
+            }
+            
+            replacePlayerItem(with: plan, entry: refreshedEntry)
         }
-        
-        replacePlayerItem(with: plan, entry: refreshedEntry)
     }
 
     func replacePlayerItem(with plan: PlexService.StreamPlan, entry: PlaybackEntry) {
@@ -391,6 +425,28 @@ private extension ChannelPlayerView {
 
     @MainActor
     func handlePlaybackFailure(for entry: PlaybackEntry, plan: PlexService.StreamPlan, error: Error?) {
+        let nsError = (error as NSError?) ?? NSError(domain: "Playback", code: -1)
+        let errorCode = nsError.code
+        
+        // For HLS streams, error -1100 (file not found) often means transcoder isn't ready yet
+        // Retry once with a new session and slight delay
+        if plan.mode == .hls && errorCode == -1100 && !hasAttemptedFallback {
+            hasAttemptedFallback = true
+            AppLoggers.playback.warning(
+                "event=play.retry itemID=\(entry.media.id, privacy: .public) reason=transcoder_not_ready errorCode=\(errorCode)"
+            )
+            
+            // Wait a moment for transcoder to initialize, then retry with new session
+            Task { @MainActor in
+                try? await Task.sleep(nanoseconds: 1_000_000_000) // 1 second delay
+                
+                var options = plan.request
+                options.forceNewSession = true  // Force new transcoder session
+                startPlayback(for: entry, options: options, fallbackFrom: plan, fallbackReason: "transcoder_not_ready")
+            }
+            return
+        }
+        
         if plan.mode == .direct && !hasAttemptedFallback {
             hasAttemptedFallback = true
             let reason = (error as NSError?)?.localizedDescription ?? "direct_failed"
@@ -404,10 +460,9 @@ private extension ChannelPlayerView {
         }
 
         stopTicker()
-        let nsError = (error as NSError?) ?? NSError(domain: "Playback", code: -1)
         playbackError = nsError.localizedDescription
         AppLoggers.playback.error(
-            "event=play.status status=failed itemID=\(entry.media.id, privacy: .public) errorDomain=\(nsError.domain, privacy: .public) errorCode=\(nsError.code)"
+            "event=play.status status=failed itemID=\(entry.media.id, privacy: .public) errorDomain=\(nsError.domain, privacy: .public) errorCode=\(errorCode)"
         )
     }
 
@@ -566,8 +621,21 @@ private extension ChannelPlayerView {
         newOptions.preferDirect = false
         let minimumCap = 3_000
 
+        // When remuxing (directStream), we can't limit bitrate - it's copy-only
+        // If remuxing stalls, it's likely a network/server issue - force transcoding as fallback
+        let isRemuxing = plan.directStream
+
         var forceTranscodeTriggered = false
-        if adaptiveState.forceTranscode {
+        if isRemuxing {
+            // Remuxing failed - ALWAYS force actual transcoding as fallback on ANY stall
+            // Can't reduce remux bitrate (it's copy-only), so must switch to transcoding
+            if !adaptiveState.forceTranscode {
+                adaptiveState.forceTranscode = true
+                adaptiveState.bitrateCap = 6_000  // Start transcoding at 6Mbps
+                forceTranscodeTriggered = true
+            }
+            adaptiveState.downshiftCount += 1
+        } else if adaptiveState.forceTranscode {
             let reduced = max(Int(Double(previousBitrate) * 0.7), minimumCap)
             if reduced >= previousBitrate {
                 AppLoggers.playback.error(
@@ -576,10 +644,12 @@ private extension ChannelPlayerView {
                 return
             }
             adaptiveState.bitrateCap = reduced
+            adaptiveState.downshiftCount += 1
         } else if adaptiveState.downshiftCount >= 2 {
             adaptiveState.forceTranscode = true
             adaptiveState.bitrateCap = 6_000  // Reduced from 7Mbps for better stability
             forceTranscodeTriggered = true
+            adaptiveState.downshiftCount += 1
         } else {
             // First stall: drop to 60% (more aggressive), subsequent stalls: 70%
             let reduction = adaptiveState.downshiftCount == 0 ? 0.6 : 0.7
@@ -588,15 +658,16 @@ private extension ChannelPlayerView {
                 return
             }
             adaptiveState.bitrateCap = reduced
+            adaptiveState.downshiftCount += 1
         }
 
-        adaptiveState.downshiftCount += 1
         adaptiveState.lowThroughputStart = nil
         adaptiveState.lastRecovery = now
 
         newOptions.forceTranscode = adaptiveState.forceTranscode
         newOptions.forceRemux = adaptiveState.forceTranscode ? false : plan.directStream
-        newOptions.preferredMaxBitrate = adaptiveState.bitrateCap
+        // Only set bitrate limit when transcoding (not remuxing - remuxing copies original quality)
+        newOptions.preferredMaxBitrate = adaptiveState.forceTranscode ? adaptiveState.bitrateCap : (plan.directStream ? nil : adaptiveState.bitrateCap)
         newOptions.forceNewSession = true  // Force new Plex transcoder session with updated bitrate
 
         let logBitrate = adaptiveState.bitrateCap
@@ -783,19 +854,24 @@ private extension ChannelPlayerView {
         stopTicker()
         player.pause()
         
-        // Report session stop to Plex server
+        // Report session stop to Plex server (critical for cleanup)
         if let context = playbackContext, let sessionID = context.plan.sessionID {
-            Task {
-                let elapsed = elapsedSeconds(for: context)
-                await plexService.stopPlaybackSession(
+            let itemID = context.entry.media.id
+            let elapsed = elapsedSeconds(for: context)
+            
+            // Use Task.detached to ensure cleanup completes even if view is deallocated
+            Task.detached { [weak plexService] in
+                guard let service = plexService else { return }
+                await service.stopPlaybackSession(
                     sessionID: sessionID,
-                    itemID: context.entry.media.id,
+                    itemID: itemID,
                     offset: elapsed
                 )
             }
         }
         
         resourceLoaderDelegate = nil  // Release the delegate
+        playbackContext = nil  // Clear context to prevent duplicate cleanup
         onExit()
     }
 }
@@ -825,7 +901,8 @@ private extension ChannelPlayerView {
         var lastRecovery: Date?
 
         mutating func configure(for plan: PlexService.StreamPlan, reset: Bool) {
-            bitrateCap = plan.request.preferredMaxBitrate
+            // preferredMaxBitrate is now optional (nil for remuxing), use 8Mbps as default
+            bitrateCap = plan.request.preferredMaxBitrate ?? 8_000
             forceTranscode = plan.request.forceTranscode
             if reset {
                 downshiftCount = 0
